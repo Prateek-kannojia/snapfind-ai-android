@@ -73,4 +73,7 @@ dependencies {
     // Navigation
     implementation(libs.androidx.navigation.compose)
     implementation(libs.androidx.hilt.navigation.compose)
+
+    // On-device inference timing spike (step 1 of the on-device plan) — see spike/ package
+    implementation(libs.onnxruntime.android)
 }

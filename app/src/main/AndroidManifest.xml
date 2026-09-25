@@ -26,6 +26,18 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+          Step 1 of the on-device plan: throwaway per-photo timing spike.
+          Not linked from MainActivity's nav graph. Launch it directly:
+            adb shell am start -n com.example.snapfindai/.spike.TimingSpikeActivity
+          Delete this activity + the spike/ package once the timing question is answered.
+        -->
+        <activity
+            android:name=".spike.TimingSpikeActivity"
+            android:exported="true"
+            android:label="Timing Spike"
+            android:theme="@style/Theme.SnapFindAI" />
     </application>
 
 </manifest>

@@ -13,3 +13,12 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# Model weights for the on-device spike (spike/ package) — not committed,
+# same as how the backend never commits downloaded model weights. Bundled
+# into the APK for now to iterate fast; production will fetch them on first
+# app install instead.
+app/src/main/assets/models/
+
+# adb-pulled debug output from the spike — regenerate locally, never commit.
+/*.csv
