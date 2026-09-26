@@ -92,6 +92,58 @@ class TimingSpikeActivity : ComponentActivity() {
                         ) {
                             Text(if (running) "Running..." else "Run detection validation (Phase A)")
                         }
+                        Spacer(Modifier.height(8.dp))
+                        Button(
+                            enabled = !running,
+                            onClick = {
+                                running = true
+                                summary = null
+                                status = "Loading models..."
+                                scope.launch {
+                                    val csv = withContext(Dispatchers.Default) {
+                                        runner.loadModels()
+                                        val f = runner.runAlignmentValidation { done, total, name ->
+                                            status = "Photo $done/$total: $name"
+                                        }
+                                        runner.close()
+                                        f
+                                    }
+                                    summary = "Alignment validation (Phase B) written to:\n${csv.absolutePath}\n\n" +
+                                        "adb pull it and compare embeddings against the server's own " +
+                                        "detect+align+embed output for the same photos."
+                                    status = "Done."
+                                    running = false
+                                }
+                            }
+                        ) {
+                            Text(if (running) "Running..." else "Run alignment validation (Phase B)")
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Button(
+                            enabled = !running,
+                            onClick = {
+                                running = true
+                                summary = null
+                                status = "Loading models..."
+                                scope.launch {
+                                    val csv = withContext(Dispatchers.Default) {
+                                        runner.loadModels()
+                                        val f = runner.runJobMatching { done, total, name ->
+                                            status = "Job $done/$total: $name"
+                                        }
+                                        runner.close()
+                                        f
+                                    }
+                                    summary = "Job matching (Phase C) written to:\n${csv.absolutePath}\n\n" +
+                                        "adb pull it and score with load_device_distances() against the " +
+                                        "server's own sweep output for the same jobs."
+                                    status = "Done."
+                                    running = false
+                                }
+                            }
+                        ) {
+                            Text(if (running) "Running..." else "Run job matching (Phase C)")
+                        }
                         Spacer(Modifier.height(16.dp))
                         Text(status)
                         summary?.let {

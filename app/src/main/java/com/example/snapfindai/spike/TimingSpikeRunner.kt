@@ -201,13 +201,11 @@ class TimingSpikeRunner(private val context: Context) {
         val maxRawScore: Float,
     )
 
-    private fun detectOnePhoto(file: File): DetectionResult {
-        val bitmap = decodeBitmapCorrected(file)
-        val decodedW = bitmap.width
-        val decodedH = bitmap.height
+    /** Runs det_500m + ScrfdDecoder on an already-decoded bitmap. Does not
+     * recycle it -- Phase A's caller does that immediately; Phase B's needs
+     * the bitmap to stay alive afterward, to crop the aligned face from it. */
+    private fun runDetectionOn(bitmap: Bitmap): Pair<List<DetectedFace>, Float> {
         val detInput = preprocessForDetector(bitmap)
-        bitmap.recycle()
-
         val outputs = mutableListOf<FloatArray>()
         detSession.run(mapOf(DET_INPUT_NAME to detInput.tensor)).use { result ->
             for (entry in result) {
@@ -222,9 +220,154 @@ class TimingSpikeRunner(private val context: Context) {
 
         // outputs[0..2] are the three score tensors (strides 8/16/32) — see ScrfdDecoder.
         val maxRawScore = (0..2).maxOf { idx -> outputs[idx].maxOrNull() ?: 0f }
-
         val faces = ScrfdDecoder.decode(outputs, detInput.inputSize, detInput.inputSize, detInput.detScale)
+        return faces to maxRawScore
+    }
+
+    private fun detectOnePhoto(file: File): DetectionResult {
+        val bitmap = decodeBitmapCorrected(file)
+        val decodedW = bitmap.width
+        val decodedH = bitmap.height
+        val (faces, maxRawScore) = runDetectionOn(bitmap)
+        bitmap.recycle()
         return DetectionResult(faces, decodedW, decodedH, maxRawScore)
+    }
+
+    /**
+     * Phase B of the on-device plan: does alignment actually produce the
+     * right crop, not just detect the right box? For every detected real
+     * face: align it (FaceAligner, insightface's face_align.norm_crop
+     * ported), embed the 112x112 aligned crop with w600k_mbf, and export the
+     * embedding. Compared against the server's own detect+align+embed
+     * output for the same photos -- if alignment is correct, the two
+     * embeddings for the same face should land close together (small cosine
+     * distance), the same kind of check used to validate the ONNX port
+     * itself in benchmarks/compare_embedders.py.
+     */
+    fun runAlignmentValidation(onProgress: (done: Int, total: Int, current: String) -> Unit): File {
+        val photos = photosDir().walkTopDown()
+            .filter { it.isFile && it.extension.lowercase() in setOf("jpg", "jpeg", "png") }
+            .map { it.relativeTo(photosDir()).path to it }
+            .filter { (rel, _) -> isRealJobPhoto(rel.removePrefix("sample_test_data/")) }
+            .sortedBy { it.first }
+            .map { it.second }
+            .toList()
+
+        val out = File(context.getExternalFilesDir(null), "alignment_validation.csv")
+        out.bufferedWriter().use { w ->
+            w.write("file,face_index,score," + (0 until 512).joinToString(",") { "e$it" } + "\n")
+            photos.forEachIndexed { index, file ->
+                val label = file.relativeTo(photosDir()).path
+                try {
+                    val bitmap = decodeBitmapCorrected(file)
+                    val (faces, _) = runDetectionOn(bitmap)
+                    for ((faceIdx, face) in faces.withIndex()) {
+                        val embedding = embedFace(bitmap, face.kps)
+                        w.write("$label,$faceIdx,${face.score},${embedding.joinToString(",")}\n")
+                    }
+                    bitmap.recycle()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Skipping $label: ${e.message}", e)
+                }
+                onProgress(index + 1, photos.size, label)
+            }
+        }
+        return out
+    }
+
+    /** Align one detected face against `source` and embed it with w600k_mbf. */
+    private fun embedFace(source: Bitmap, kps: Array<FloatArray>): FloatArray {
+        val aligned = FaceAligner.alignFace(source, kps)
+        val embTensor = preprocessForRecognizer(aligned)
+        var embedding = FloatArray(0)
+        recSession.run(mapOf(REC_INPUT_NAME to embTensor)).use { result ->
+            for (entry in result) {
+                val tensor = entry.value as OnnxTensor
+                val buf = tensor.floatBuffer
+                embedding = FloatArray(buf.remaining())
+                buf.get(embedding)
+            }
+        }
+        embTensor.close()
+        aligned.recycle()
+        return embedding
+    }
+
+    private fun cosineDistance(a: FloatArray, b: FloatArray): Float {
+        var dot = 0f; var na = 0f; var nb = 0f
+        for (i in a.indices) {
+            dot += a[i] * b[i]
+            na += a[i] * a[i]
+            nb += b[i] * b[i]
+        }
+        if (na == 0f || nb == 0f) return 1f
+        return 1f - dot / (kotlin.math.sqrt(na) * kotlin.math.sqrt(nb))
+    }
+
+    /**
+     * Phase C of the on-device plan: the actual end-to-end match decision,
+     * not two separate exports joined by a script. For each real job:
+     * detect the selfie, embed its largest face (same rule as the server's
+     * SCRFD selfie mode -- _selfie_embedding_scrfd() in face_matcher.py),
+     * then for every event photo, detect+align+embed every face and keep
+     * the closest one (same rule as _embed_and_score_event_photo: "a photo
+     * matches if anyone in it matches"). Exports job,file,d -- the exact
+     * contract _common.py's load_device_distances()/records_from_distances()
+     * already read, so this scores through the identical path as every
+     * other number in this project, no new scoring code needed.
+     */
+    fun runJobMatching(onProgress: (done: Int, total: Int, current: String) -> Unit): File {
+        val realJobDirs = File(photosDir(), "sample_test_data")
+            .listFiles { f -> f.isDirectory && !f.name.startsWith("job") }
+            ?.sortedBy { it.name } ?: emptyList()
+
+        val out = File(context.getExternalFilesDir(null), "job_matching.csv")
+        out.bufferedWriter().use { w ->
+            w.write("job,file,d\n")
+            realJobDirs.forEachIndexed { index, jobDir ->
+                // UUID-style folder (the 3 original real jobs) -> match _common.py's
+                // job_id[:8] convention exactly. Anything else (e.g. gokarnaNN) ->
+                // use the full name; an 8-char truncation would collide distinct
+                // jobs together (gokarna01..09 all becoming "gokarna0", etc).
+                val isUuidStyle = jobDir.name.length >= 8 && jobDir.name[8] == '-'
+                val jobName = "real_" + if (isUuidStyle) jobDir.name.take(8) else jobDir.name
+                try {
+                    val selfieFile = File(jobDir, "selfie")
+                        .listFiles { f -> f.extension.lowercase() in setOf("jpg", "jpeg", "png") }
+                        ?.firstOrNull() ?: throw IllegalStateException("no selfie file")
+                    val selfieBitmap = decodeBitmapCorrected(selfieFile)
+                    val (selfieFaces, _) = runDetectionOn(selfieBitmap)
+                    if (selfieFaces.isEmpty()) throw IllegalStateException("no face in selfie")
+                    val largest = selfieFaces.maxByOrNull { (it.box[2] - it.box[0]) * (it.box[3] - it.box[1]) }!!
+                    val selfieEmbedding = embedFace(selfieBitmap, largest.kps)
+                    selfieBitmap.recycle()
+
+                    val eventPhotos = File(jobDir, "event_photos")
+                        .listFiles { f -> f.extension.lowercase() in setOf("jpg", "jpeg", "png") }
+                        ?.sortedBy { it.name } ?: emptyList()
+                    for (photo in eventPhotos) {
+                        try {
+                            val bitmap = decodeBitmapCorrected(photo)
+                            val (faces, _) = runDetectionOn(bitmap)
+                            val d = if (faces.isEmpty()) {
+                                null
+                            } else {
+                                faces.minOf { face -> cosineDistance(selfieEmbedding, embedFace(bitmap, face.kps)) }
+                            }
+                            bitmap.recycle()
+                            w.write("$jobName,${photo.name},${d ?: ""}\n")
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Skipping ${photo.name}: ${e.message}", e)
+                            w.write("$jobName,${photo.name},\n")
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Skipping job ${jobDir.name}: ${e.message}", e)
+                }
+                onProgress(index + 1, realJobDirs.size, jobName)
+            }
+        }
+        return out
     }
 
     private fun timeOnePhoto(file: File): PhotoTiming {
