@@ -1,17 +1,17 @@
-package com.example.snapfindai.spike
+package com.example.snapfindai.facesdk
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
+import com.example.snapfindai.facesdk.model.FaceLandmarks
 
 /**
- * Phase B of the on-device plan: insightface's face_align.norm_crop, ported.
- * Fits a similarity transform (rotation + uniform scale + translation, no
- * reflection) from the 5 detected landmarks to ArcFace's fixed reference
- * points, then warps the ORIGINAL image into the 112x112 aligned crop the
- * embedder expects.
+ * insightface's face_align.norm_crop, ported. Fits a similarity transform
+ * (rotation + uniform scale + translation, no reflection) from the 5
+ * detected landmarks to ArcFace's fixed reference points, then warps the
+ * ORIGINAL image into the 112x112 aligned crop the embedder expects.
  *
  * insightface computes the transform via skimage's SimilarityTransform,
  * which is a general SVD-based (Umeyama) solver. For exactly 5 non-collinear
@@ -34,8 +34,14 @@ object FaceAligner {
     )
     const val IMAGE_SIZE = 112
 
-    /** Returns (a, b, tx, ty) for x' = a*x - b*y + tx ; y' = b*x + a*y + ty. */
-    private fun estimateSimilarity(src: Array<FloatArray>, dst: Array<FloatArray>): FloatArray {
+    /**
+     * Returns (a, b, tx, ty) for x' = a*x - b*y + tx ; y' = b*x + a*y + ty.
+     * Internal (not private) so a unit test can check this math directly —
+     * the actual risky part of the port — without going through real Canvas
+     * pixel compositing, which Robolectric doesn't render faithfully enough
+     * to assert on pixel-for-pixel.
+     */
+    internal fun estimateSimilarity(src: Array<FloatArray>, dst: Array<FloatArray>): FloatArray {
         val n = src.size
         var srcMeanX = 0f; var srcMeanY = 0f
         var dstMeanX = 0f; var dstMeanY = 0f
@@ -64,12 +70,13 @@ object FaceAligner {
 
     /**
      * source: the ORIGINAL (or crop-source) image, same convention as
-     * production's crop-from-original. kps: the detected face's 5 landmarks,
-     * in that same image's pixel coordinates (ScrfdDecoder already returns
-     * them post-detScale, so no further scaling needed here).
+     * production's crop-from-original. landmarks: the detected face's 5
+     * points, in that same image's pixel coordinates (FaceDetector already
+     * returns them post-detScale, so no further scaling needed here).
      */
-    fun alignFace(source: Bitmap, kps: Array<FloatArray>): Bitmap {
-        val (a, b, tx, ty) = estimateSimilarity(kps, ARCFACE_DST)
+    fun align(source: Bitmap, landmarks: FaceLandmarks): Bitmap {
+        val src = landmarks.points.map { floatArrayOf(it.x, it.y) }.toTypedArray()
+        val (a, b, tx, ty) = estimateSimilarity(src, ARCFACE_DST)
 
         val matrix = Matrix()
         // Android's row-major order: [scaleX, skewX, transX, skewY, scaleY, transY, 0, 0, 1]

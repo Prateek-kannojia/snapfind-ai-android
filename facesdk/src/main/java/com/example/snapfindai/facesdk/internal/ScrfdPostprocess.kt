@@ -1,28 +1,28 @@
-package com.example.snapfindai.spike
+package com.example.snapfindai.facesdk.internal
 
+import android.graphics.PointF
+import android.graphics.RectF
+import com.example.snapfindai.facesdk.model.DetectedFace
+import com.example.snapfindai.facesdk.model.FaceLandmarks
 import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Phase A of the on-device plan: SCRFD's raw ONNX output decoded into real
- * face boxes + 5-point landmarks. Ported line-for-line from insightface's
- * own scrfd.py (SCRFD.forward / SCRFD.detect / SCRFD.nms) — same strides,
- * same anchor duplication order, same distance-to-box/kps math, same NMS,
- * same defaults (det_thresh=0.5, nms_thresh=0.4). Deliberately not
- * reinvented: this is the one place a subtle difference from production
- * would silently change every downstream result.
+ * SCRFD's raw ONNX output decoded into real face boxes + 5-point landmarks.
+ * Ported line-for-line from insightface's own scrfd.py (SCRFD.forward /
+ * SCRFD.detect / SCRFD.nms) — same strides, same anchor duplication order,
+ * same distance-to-box/kps math, same NMS, same defaults (det_thresh=0.5,
+ * nms_thresh=0.4). Deliberately not reinvented: this is the one place a
+ * subtle difference from production would silently change every
+ * downstream result.
  */
-data class DetectedFace(
-    val box: FloatArray,      // x1, y1, x2, y2 — original image pixel coords
-    val score: Float,
-    val kps: Array<FloatArray>, // 5 points, each [x, y] — original image pixel coords
-)
-
-object ScrfdDecoder {
+internal object ScrfdPostprocess {
     private val STRIDES = intArrayOf(8, 16, 32)
     private const val NUM_ANCHORS = 2
     const val DET_THRESH = 0.5f
     const val NMS_THRESH = 0.4f
+
+    private data class RawFace(val box: FloatArray, val score: Float, val kps: Array<FloatArray>)
 
     /**
      * outputs: the 9 det_500m output tensors, in the ONNX graph's own order —
@@ -38,7 +38,7 @@ object ScrfdDecoder {
         inputH: Int,
         detScale: Float,
     ): List<DetectedFace> {
-        val candidates = mutableListOf<DetectedFace>()
+        val candidates = mutableListOf<RawFace>()
 
         for (idx in STRIDES.indices) {
             val stride = STRIDES[idx]
@@ -69,7 +69,7 @@ object ScrfdDecoder {
                                     cy + kpsPreds[kOff + j * 2 + 1] * stride,
                                 )
                             }
-                            candidates += DetectedFace(floatArrayOf(x1, y1, x2, y2), score, kps)
+                            candidates += RawFace(floatArrayOf(x1, y1, x2, y2), score, kps)
                         }
                         k++
                     }
@@ -78,20 +78,26 @@ object ScrfdDecoder {
         }
 
         val scaled = candidates.map { f ->
-            DetectedFace(
+            RawFace(
                 floatArrayOf(f.box[0] / detScale, f.box[1] / detScale, f.box[2] / detScale, f.box[3] / detScale),
                 f.score,
                 f.kps.map { floatArrayOf(it[0] / detScale, it[1] / detScale) }.toTypedArray(),
             )
         }
-        return nms(scaled.sortedByDescending { it.score })
+        return nms(scaled.sortedByDescending { it.score }).map { it.toDetectedFace() }
     }
 
+    private fun RawFace.toDetectedFace(): DetectedFace = DetectedFace(
+        box = RectF(box[0], box[1], box[2], box[3]),
+        score = score,
+        landmarks = FaceLandmarks(kps.map { PointF(it[0], it[1]) }.toTypedArray()),
+    )
+
     /** Greedy NMS, +1 area convention matched to insightface's own nms() exactly. */
-    private fun nms(faces: List<DetectedFace>): List<DetectedFace> {
+    private fun nms(faces: List<RawFace>): List<RawFace> {
         val areas = faces.map { (it.box[2] - it.box[0] + 1) * (it.box[3] - it.box[1] + 1) }
         val suppressed = BooleanArray(faces.size)
-        val kept = mutableListOf<DetectedFace>()
+        val kept = mutableListOf<RawFace>()
 
         for (i in faces.indices) {
             if (suppressed[i]) continue
