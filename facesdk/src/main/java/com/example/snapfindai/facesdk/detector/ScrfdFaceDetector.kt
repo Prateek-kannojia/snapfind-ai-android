@@ -1,34 +1,23 @@
-package com.example.snapfindai.facesdk
+package com.example.snapfindai.facesdk.detector
 
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
-import android.content.Context
 import android.graphics.Bitmap
-import com.example.snapfindai.facesdk.internal.OrtSessions
-import com.example.snapfindai.facesdk.internal.ScrfdPostprocess
+import com.example.snapfindai.facesdk.api.FaceDetector
 import com.example.snapfindai.facesdk.model.DetectedFace
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.Closeable
 import java.nio.FloatBuffer
 import kotlin.math.max
 
-/** Finds faces (box + 5 landmarks) in a decoded bitmap. Backed by SCRFD (det_500m), the same detector production runs. */
-interface FaceDetector : Closeable {
-    suspend fun detect(bitmap: Bitmap): List<DetectedFace>
-
-    companion object {
-        /** Loads det_500m.onnx from this app's assets/models/. */
-        suspend fun create(context: Context): FaceDetector = withContext(Dispatchers.Default) {
-            val env = OrtEnvironment.getEnvironment()
-            val session = OrtSessions.load(context, env, "det_500m.onnx")
-            ScrfdFaceDetector(env, session)
-        }
-    }
-}
-
-private class ScrfdFaceDetector(
+/**
+ * SCRFD (det_500m), run through ONNX Runtime. This is the one and only
+ * implementation of [FaceDetector] the SDK ships — created via
+ * [FaceDetector.create]/[FaceDetector.createFromBytes], never directly, so
+ * a host app never depends on this class name, only the interface.
+ */
+internal class ScrfdFaceDetector(
     private val env: OrtEnvironment,
     private val session: OrtSession,
 ) : FaceDetector {

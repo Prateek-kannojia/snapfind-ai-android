@@ -1,4 +1,4 @@
-package com.example.snapfindai.facesdk.internal
+package com.example.snapfindai.facesdk.detector
 
 import android.graphics.PointF
 import android.graphics.RectF

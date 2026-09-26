@@ -1,4 +1,4 @@
-package com.example.snapfindai.facesdk.internal
+package com.example.snapfindai.facesdk.detector
 
 import org.junit.Assert.assertEquals
 import org.junit.Test

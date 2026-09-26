@@ -1,32 +1,23 @@
-package com.example.snapfindai.facesdk
+package com.example.snapfindai.facesdk.embedder
 
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
-import android.content.Context
 import android.graphics.Bitmap
-import com.example.snapfindai.facesdk.internal.OrtSessions
+import com.example.snapfindai.facesdk.FaceAligner
+import com.example.snapfindai.facesdk.api.FaceEmbedder
 import com.example.snapfindai.facesdk.model.FaceEmbedding
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.Closeable
 import java.nio.FloatBuffer
 
-/** Embeds an aligned 112x112 face crop (see [FaceAligner.align]) into a 512-D vector. Backed by w600k_mbf, the same embedder production runs. */
-interface FaceEmbedder : Closeable {
-    suspend fun embed(alignedFace: Bitmap): FaceEmbedding
-
-    companion object {
-        /** Loads w600k_mbf.onnx from this app's assets/models/. */
-        suspend fun create(context: Context): FaceEmbedder = withContext(Dispatchers.Default) {
-            val env = OrtEnvironment.getEnvironment()
-            val session = OrtSessions.load(context, env, "w600k_mbf.onnx")
-            OnnxFaceEmbedder(env, session)
-        }
-    }
-}
-
-private class OnnxFaceEmbedder(
+/**
+ * w600k_mbf, run through ONNX Runtime. This is the one and only
+ * implementation of [FaceEmbedder] the SDK ships — created via
+ * [FaceEmbedder.create]/[FaceEmbedder.createFromBytes], never directly, so
+ * a host app never depends on this class name, only the interface.
+ */
+internal class OnnxFaceEmbedder(
     private val env: OrtEnvironment,
     private val session: OrtSession,
 ) : FaceEmbedder {

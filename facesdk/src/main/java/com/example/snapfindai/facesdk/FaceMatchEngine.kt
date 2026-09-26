@@ -2,6 +2,8 @@ package com.example.snapfindai.facesdk
 
 import android.content.Context
 import android.graphics.Bitmap
+import com.example.snapfindai.facesdk.api.FaceDetector
+import com.example.snapfindai.facesdk.api.FaceEmbedder
 import com.example.snapfindai.facesdk.model.EventPhotoInput
 import com.example.snapfindai.facesdk.model.EventPhotoMatchResult
 import com.example.snapfindai.facesdk.model.FaceEmbedding

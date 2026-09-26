@@ -4,12 +4,20 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import android.content.Context
 
-/** Loads a bundled ONNX model from assets/models/. Shared by FaceDetector and FaceEmbedder so there's one place that knows the asset layout. */
+/**
+ * Loads an ONNX model into a runnable session. Shared by the detector and
+ * embedder implementations so there's one place that knows how model bytes
+ * become a session, however those bytes were obtained: a bundled asset (the
+ * default, validated models) or bytes a host app supplies itself (a newer
+ * version of the same model, one fetched at runtime, one loaded from its own
+ * assets — anywhere).
+ */
 internal object OrtSessions {
-    fun load(context: Context, env: OrtEnvironment, assetName: String): OrtSession {
-        val opts = OrtSession.SessionOptions()
-        return context.assets.open("models/$assetName").use { input ->
-            env.createSession(input.readBytes(), opts)
-        }
+    fun fromAsset(context: Context, env: OrtEnvironment, assetPath: String): OrtSession {
+        val bytes = context.assets.open(assetPath).use { it.readBytes() }
+        return fromBytes(env, bytes)
     }
+
+    fun fromBytes(env: OrtEnvironment, modelBytes: ByteArray): OrtSession =
+        env.createSession(modelBytes, OrtSession.SessionOptions())
 }
