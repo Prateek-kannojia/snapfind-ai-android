@@ -13,7 +13,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
-import com.example.snapfindai.data.remote.MatchItem
+import com.example.snapfindai.domain.model.FaceMatchResult
 import com.example.snapfindai.presentation.screens.upload.UploadUiState
 import com.example.snapfindai.presentation.screens.upload.UploadViewModel
 
@@ -67,13 +67,13 @@ fun ResultsScreen(
 }
 
 @Composable
-fun MatchCard(match: MatchItem) {
+fun MatchCard(match: FaceMatchResult) {
     Card(
         modifier = Modifier.fillMaxWidth().aspectRatio(1f),
         elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
     ) {
         AsyncImage(
-            model = match.download_url,
+            model = match.photo,
             contentDescription = "Matched Photo",
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize()

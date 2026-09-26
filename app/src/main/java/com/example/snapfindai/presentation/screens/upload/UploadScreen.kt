@@ -51,7 +51,7 @@ fun UploadScreen(
                 is UploadUiState.Processing -> {
                     CircularProgressIndicator()
                     Spacer(modifier = Modifier.height(16.dp))
-                    Text("Uploading and matching faces... This may take a while.", style = MaterialTheme.typography.bodyLarge)
+                    Text("Finding matches on your device... This may take a while.", style = MaterialTheme.typography.bodyLarge)
                 }
                 else -> {
                     Text("Step 1: Select Your Selfie", style = MaterialTheme.typography.titleMedium)

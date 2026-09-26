@@ -1,72 +1,52 @@
 package com.example.snapfindai.domain.usecase
 
-import com.example.snapfindai.data.remote.MatchItem
-import com.example.snapfindai.domain.repository.JobRepository
-import kotlinx.coroutines.delay
+import com.example.snapfindai.domain.model.FaceMatchResult
+import com.example.snapfindai.domain.repository.FaceMatchRepository
+import com.example.snapfindai.facesdk.FaceMatcher
+import com.example.snapfindai.facesdk.NoFaceDetectedException
+import com.example.snapfindai.utils.FileHelper
 import java.io.File
 import javax.inject.Inject
 
 // Use case owns all the business logic for this feature:
-//   - what order to call the API steps
-//   - how long to poll and when to give up
-//   - what counts as a failure
-//   - cleaning up temp files when done
+//   - unzip the event photos, hand real files (not bytes) to the repository
+//   - decide what counts as a failure, and give it a clear message
+//   - clean up temp files when done -- but NOT the matched photos
+//     themselves, since ResultsScreen still needs to display them
 //
-// The repository just fetches data. The ViewModel just drives UI state.
+// The repository just decides matches. The ViewModel just drives UI state.
 // This class is the only place that knows HOW the feature works end-to-end.
 class FindFacesInPhotosUseCase @Inject constructor(
-    private val repository: JobRepository
+    private val faceMatchRepository: FaceMatchRepository,
 ) {
-    companion object {
-        // Matches the "baseline (current production)" row in
-        // Face_recognition/benchmarks/RESULTS.md's detector/embedder sweep —
-        // the threshold actually chosen for the config the deployed backend
-        // runs by default (mtcnn selfie detector + DeepFace ArcFace).
-        // The on-device facesdk module targets a different, better-measured
-        // config (SCRFD + w600k_mbf) and has its own threshold
-        // (FaceMatcher.DEFAULT_THRESHOLD) — the two are not interchangeable.
-        const val DEFAULT_THRESHOLD = 0.70
-    }
-
     suspend operator fun invoke(
         selfieFile: File,
         zipFile: File,
-        threshold: Double = DEFAULT_THRESHOLD
-    ): Result<List<MatchItem>> {
+        threshold: Float = FaceMatcher.DEFAULT_THRESHOLD,
+    ): Result<List<FaceMatchResult>> {
+        val extractDir = File(zipFile.parentFile, "event_photos_${System.currentTimeMillis()}")
         return try {
-            // Step 1: upload files, get back a job ID
-            val jobId = repository.uploadJob(selfieFile, zipFile).job_id
+            val eventPhotos = FileHelper.unzip(zipFile, extractDir)
+                .filter { it.extension.lowercase() in setOf("jpg", "jpeg", "png") }
+            if (eventPhotos.isEmpty()) {
+                return Result.failure(Exception("No photos found in that ZIP file."))
+            }
 
-            // Step 2: tell the backend to start face matching
-            // The backend returns immediately — actual processing runs in its background
-            repository.triggerProcessing(jobId, threshold)
+            val matches = faceMatchRepository.matchPhotos(selfieFile, eventPhotos, threshold)
 
-            // Step 3: poll until the backend finishes (business rule: max 2 minutes)
-            waitForCompletion(jobId)
+            // Free the disk space of everything that didn't match -- only
+            // the results ResultsScreen will actually display are kept.
+            val matchedFiles = matches.map { it.photo }.toSet()
+            eventPhotos.filterNot { it in matchedFiles }.forEach { it.delete() }
 
-            // Step 4: fetch the matched photos
-            Result.success(repository.getJobMatches(jobId))
-
+            Result.success(matches)
+        } catch (e: NoFaceDetectedException) {
+            Result.failure(Exception("We couldn't find a face in your selfie. Try a clearer, well-lit photo.", e))
         } catch (e: Exception) {
             Result.failure(e)
         } finally {
-            // Always clean up temp files regardless of success or failure
             selfieFile.delete()
             zipFile.delete()
         }
-    }
-
-    private suspend fun waitForCompletion(jobId: String) {
-        // Poll every 2 seconds, give up after 60 attempts (2 minutes total)
-        repeat(60) {
-            when (repository.getJobStatus(jobId).status) {
-                "completed" -> return
-                "failed" -> throw Exception(
-                    "Face matching failed on the server. Try uploading a clearer selfie."
-                )
-            }
-            delay(2_000)
-        }
-        throw Exception("Processing timed out after 2 minutes.")
     }
 }
