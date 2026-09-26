@@ -8,15 +8,13 @@ import java.io.InputStream
 
 object FileHelper {
     fun uriToFile(context: Context, uri: Uri, fileName: String): File? {
-        val inputStream: InputStream? = context.contentResolver.openInputStream(uri)
-        if (inputStream != null) {
-            val file = File(context.cacheDir, fileName)
-            val outputStream = FileOutputStream(file)
-            inputStream.copyTo(outputStream)
-            inputStream.close()
-            outputStream.close()
-            return file
+        val inputStream: InputStream = context.contentResolver.openInputStream(uri) ?: return null
+        val file = File(context.cacheDir, fileName)
+        inputStream.use { input ->
+            FileOutputStream(file).use { output ->
+                input.copyTo(output)
+            }
         }
-        return null
+        return file
     }
 }

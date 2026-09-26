@@ -1,7 +1,6 @@
 package com.example.snapfindai.presentation.screens.upload
 
 import android.net.Uri
-import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
@@ -57,10 +56,7 @@ fun UploadScreen(
                 else -> {
                     Text("Step 1: Select Your Selfie", style = MaterialTheme.typography.titleMedium)
                     Spacer(modifier = Modifier.height(8.dp))
-                    Button(onClick = { 
-                        Log.d("UploadScreen", "Selfie button clicked!")
-                        selfieLauncher.launch("image/*") 
-                    }) {
+                    Button(onClick = { selfieLauncher.launch("image/*") }) {
                         Text(if (selfieUri == null) "Choose Image" else "Image Selected")
                     }
 
@@ -68,10 +64,7 @@ fun UploadScreen(
 
                     Text("Step 2: Select Event Photos (ZIP)", style = MaterialTheme.typography.titleMedium)
                     Spacer(modifier = Modifier.height(8.dp))
-                    Button(onClick = { 
-                        Log.d("UploadScreen", "ZIP button clicked!")
-                        zipLauncher.launch("application/zip") 
-                    }) {
+                    Button(onClick = { zipLauncher.launch("application/zip") }) {
                         Text(if (zipUri == null) "Choose ZIP Archive" else "ZIP Selected")
                     }
 

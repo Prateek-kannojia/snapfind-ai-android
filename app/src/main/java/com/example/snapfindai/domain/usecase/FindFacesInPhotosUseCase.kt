@@ -17,10 +17,21 @@ import javax.inject.Inject
 class FindFacesInPhotosUseCase @Inject constructor(
     private val repository: JobRepository
 ) {
+    companion object {
+        // Matches the "baseline (current production)" row in
+        // Face_recognition/benchmarks/RESULTS.md's detector/embedder sweep —
+        // the threshold actually chosen for the config the deployed backend
+        // runs by default (mtcnn selfie detector + DeepFace ArcFace).
+        // The on-device facesdk module targets a different, better-measured
+        // config (SCRFD + w600k_mbf) and has its own threshold
+        // (FaceMatcher.DEFAULT_THRESHOLD) — the two are not interchangeable.
+        const val DEFAULT_THRESHOLD = 0.70
+    }
+
     suspend operator fun invoke(
         selfieFile: File,
         zipFile: File,
-        threshold: Double = 0.5
+        threshold: Double = DEFAULT_THRESHOLD
     ): Result<List<MatchItem>> {
         return try {
             // Step 1: upload files, get back a job ID

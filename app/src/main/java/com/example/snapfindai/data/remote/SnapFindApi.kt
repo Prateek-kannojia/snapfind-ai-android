@@ -60,10 +60,13 @@ interface SnapFindApi {
         @Path("job_id") jobId: String
     ): JobSummaryResponse
 
+    // No default here: the caller (JobRepositoryImpl) always passes an explicit
+    // value, and Retrofit's dynamic proxy wouldn't honor a Kotlin default
+    // anyway (it's dead code, unreachable through the real call path).
     @POST("jobs/{job_id}/process")
     suspend fun processJob(
         @Path("job_id") jobId: String,
-        @Query("threshold") threshold: Double = 0.5
+        @Query("threshold") threshold: Double
     ): JobSummaryResponse
 
     @GET("jobs/{job_id}/matches")
