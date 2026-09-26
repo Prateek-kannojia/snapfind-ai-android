@@ -282,6 +282,6 @@ app/src/main/java/com/example/snapfindai/
 
 ## Status & roadmap
 
-Current state matches the Phase 1 checklist in `ROADMAP.md` (Compose UI, Retrofit integration, Hilt DI, Coil image loading — all done). No work has started yet on this app beyond that MVP.
+The original MVP checklist (Compose UI, Retrofit integration, Hilt DI, Coil image loading) is done.
 
-Cross-project status (this app + the backend) is tracked in one place to avoid two docs drifting out of sync: see "Cross-project status" in `../Face_recognition/README.md`. Short version of what's open on the Android side specifically: the UI is still bare-bones and needs a redesign, and no hybrid/on-device matching work has started. Future phases (hybrid AI, Google Drive ingestion, event-driven backend) are in `ROADMAP.md`.
+Cross-project status (this app + the backend) is tracked in one place to avoid two docs drifting out of sync: see "Cross-project status" in `../Face_recognition/README.md`.

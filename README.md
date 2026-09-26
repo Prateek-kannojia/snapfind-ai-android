@@ -51,4 +51,4 @@ app/src/main/java/com/example/snapfindai/
 └── utils/
 ```
 
-Full layer-by-layer explanation, why each pattern was chosen, and code walkthroughs: **[DEEP_DIVE.md](DEEP_DIVE.md)**. Future phases and current status: [ROADMAP.md](ROADMAP.md).
+Full layer-by-layer explanation, why each pattern was chosen, and code walkthroughs: **[DEEP_DIVE.md](DEEP_DIVE.md)**.
