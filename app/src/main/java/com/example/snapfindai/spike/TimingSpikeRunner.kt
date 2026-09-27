@@ -75,7 +75,7 @@ class TimingSpikeRunner(private val context: Context) {
                     val label = file.relativeTo(photosDir()).path
                     try {
                         val bitmap = BitmapDecoder.decodeWithExifCorrection(file)
-                        val faces = engine.detector.detect(bitmap)
+                        val faces = engine.detectFaces(bitmap)
                         for (f in faces) {
                             val kp = f.landmarks.points.joinToString(",") { "${it.x},${it.y}" }
                             w.write("$label,${f.box.left},${f.box.top},${f.box.right},${f.box.bottom},${f.score},$kp\n")
@@ -109,10 +109,10 @@ class TimingSpikeRunner(private val context: Context) {
                 val label = file.relativeTo(photosDir()).path
                 try {
                     val bitmap = BitmapDecoder.decodeWithExifCorrection(file)
-                    val faces = engine.detector.detect(bitmap)
+                    val faces = engine.detectFaces(bitmap)
                     for ((faceIdx, face) in faces.withIndex()) {
                         val aligned = FaceAligner.align(bitmap, face.landmarks)
-                        val embedding = engine.embedder.embed(aligned)
+                        val embedding = engine.embedFace(aligned)
                         aligned.recycle()
                         w.write("$label,$faceIdx,${face.score},${embedding.values.joinToString(",")}\n")
                     }

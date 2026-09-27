@@ -162,4 +162,21 @@ class FaceMatchEngineTest {
         assertFalse(strict.single().isMatch)
         assertTrue(lenient.single().isMatch)
     }
+
+    @Test
+    fun `using the engine after close throws instead of silently misbehaving`() = runBlocking {
+        val selfie = bitmap()
+        val detector = FakeFaceDetector(mapOf(selfie to { listOf(DetectedFace(someBox, 0.9f, someLandmarks)) }))
+        val embedder = FakeFaceEmbedder { FaceEmbedding(floatArrayOf(1f, 0f)) }
+        val engine = FaceMatchEngine(detector, embedder, FaceSdkLogger.NONE)
+
+        engine.close()
+
+        try {
+            engine.embedSelfie(selfie)
+            fail("expected an IllegalStateException after close()")
+        } catch (e: IllegalStateException) {
+            assertTrue(e.message!!.contains("closed"))
+        }
+    }
 }

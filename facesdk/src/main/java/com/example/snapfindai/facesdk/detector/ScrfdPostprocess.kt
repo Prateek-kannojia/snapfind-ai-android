@@ -19,8 +19,6 @@ import kotlin.math.min
 internal object ScrfdPostprocess {
     private val STRIDES = intArrayOf(8, 16, 32)
     private const val NUM_ANCHORS = 2
-    const val DET_THRESH = 0.5f
-    const val NMS_THRESH = 0.4f
 
     private data class RawFace(val box: FloatArray, val score: Float, val kps: Array<FloatArray>)
 
@@ -31,12 +29,17 @@ internal object ScrfdPostprocess {
      * detScale: new_height / original_height from the letterbox resize —
      * boxes/kps come out in letterboxed-image pixels and must be divided by
      * this to land back in the original photo's pixel space.
+     * detThreshold/nmsThreshold: see FaceDetectorConfig -- insightface's own
+     * SCRFD defaults are 0.5/0.4, kept as this function's defaults too so
+     * existing call sites/tests don't need to change to stay correct.
      */
     fun decode(
         outputs: List<FloatArray>,
         inputW: Int,
         inputH: Int,
         detScale: Float,
+        detThreshold: Float = 0.5f,
+        nmsThreshold: Float = 0.4f,
     ): List<DetectedFace> {
         val candidates = mutableListOf<RawFace>()
 
@@ -55,7 +58,7 @@ internal object ScrfdPostprocess {
                     val cy = (y * stride).toFloat()
                     for (a in 0 until NUM_ANCHORS) {
                         val score = scores[k]
-                        if (score >= DET_THRESH) {
+                        if (score >= detThreshold) {
                             val bOff = k * 4
                             val x1 = cx - bboxPreds[bOff] * stride
                             val y1 = cy - bboxPreds[bOff + 1] * stride
@@ -84,7 +87,7 @@ internal object ScrfdPostprocess {
                 f.kps.map { floatArrayOf(it[0] / detScale, it[1] / detScale) }.toTypedArray(),
             )
         }
-        return nms(scaled.sortedByDescending { it.score }).map { it.toDetectedFace() }
+        return nms(scaled.sortedByDescending { it.score }, nmsThreshold).map { it.toDetectedFace() }
     }
 
     private fun RawFace.toDetectedFace(): DetectedFace = DetectedFace(
@@ -94,7 +97,7 @@ internal object ScrfdPostprocess {
     )
 
     /** Greedy NMS, +1 area convention matched to insightface's own nms() exactly. */
-    private fun nms(faces: List<RawFace>): List<RawFace> {
+    private fun nms(faces: List<RawFace>, nmsThreshold: Float): List<RawFace> {
         val areas = faces.map { (it.box[2] - it.box[0] + 1) * (it.box[3] - it.box[1] + 1) }
         val suppressed = BooleanArray(faces.size)
         val kept = mutableListOf<RawFace>()
@@ -112,7 +115,7 @@ internal object ScrfdPostprocess {
                 val h = max(0f, yy2 - yy1 + 1)
                 val inter = w * h
                 val overlap = inter / (areas[i] + areas[j] - inter)
-                if (overlap > NMS_THRESH) suppressed[j] = true
+                if (overlap > nmsThreshold) suppressed[j] = true
             }
         }
         return kept

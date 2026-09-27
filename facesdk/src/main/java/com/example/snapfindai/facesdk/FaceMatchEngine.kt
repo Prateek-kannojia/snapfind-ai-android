@@ -3,7 +3,9 @@ package com.example.snapfindai.facesdk
 import android.content.Context
 import android.graphics.Bitmap
 import com.example.snapfindai.facesdk.api.FaceDetector
+import com.example.snapfindai.facesdk.api.FaceDetectorConfig
 import com.example.snapfindai.facesdk.api.FaceEmbedder
+import com.example.snapfindai.facesdk.model.DetectedFace
 import com.example.snapfindai.facesdk.model.EventPhotoInput
 import com.example.snapfindai.facesdk.model.EventPhotoMatchResult
 import com.example.snapfindai.facesdk.model.FaceEmbedding
@@ -19,21 +21,28 @@ import java.io.Closeable
  *    closest one determines the distance (matches _embed_and_score_event_photo,
  *    "a photo matches if anyone in it matches").
  *
- * For composable/advanced use, [FaceDetector], [FaceAligner], [FaceEmbedder]
- * and [FaceMatcher] are also public and usable independently of this facade.
+ * For composable/advanced use, [detectFaces] and [embedFace] expose the
+ * underlying [FaceDetector]/[FaceEmbedder] without handing out the raw,
+ * independently-closeable objects — closing one out from under a live
+ * engine used to be possible and silently broke it. Call [close] on the
+ * engine itself when done; the detector/embedder it owns close with it.
  */
 class FaceMatchEngine internal constructor(
-    /** The underlying detector, for composable/advanced use — e.g. inspecting every face in a photo rather than just the match decision. */
-    val detector: FaceDetector,
-    /** The underlying embedder, for composable/advanced use. */
-    val embedder: FaceEmbedder,
+    private val detector: FaceDetector,
+    private val embedder: FaceEmbedder,
     private val logger: FaceSdkLogger,
 ) : Closeable {
 
+    @Volatile private var closed = false
+
     companion object {
-        /** The bundled, validated pair: SCRFD (det_500m.onnx) + w600k_mbf.onnx from this module's own assets. */
-        suspend fun create(context: Context, logger: FaceSdkLogger = FaceSdkLogger.NONE): FaceMatchEngine {
-            val detector = FaceDetector.create(context)
+        /** The bundled, validated pair: SCRFD (det_500m.onnx) + w600k_mbf.onnx from this module's own assets. [detectorConfig] tunes the detector's thresholds/input size without needing to assemble the pieces by hand. */
+        suspend fun create(
+            context: Context,
+            logger: FaceSdkLogger = FaceSdkLogger.NONE,
+            detectorConfig: FaceDetectorConfig = FaceDetectorConfig(),
+        ): FaceMatchEngine {
+            val detector = FaceDetector.create(context, detectorConfig)
             val embedder = FaceEmbedder.create(context)
             return FaceMatchEngine(detector, embedder, logger)
         }
@@ -51,8 +60,25 @@ class FaceMatchEngine internal constructor(
         ): FaceMatchEngine = FaceMatchEngine(detector, embedder, logger)
     }
 
+    private fun checkNotClosed() {
+        check(!closed) { "FaceMatchEngine is closed -- create a new one instead of reusing a closed instance." }
+    }
+
+    /** Every face found in [bitmap] — for composable/advanced use, e.g. letting a user pick which face is "them" in a group photo instead of automatically taking the largest. */
+    suspend fun detectFaces(bitmap: Bitmap): List<DetectedFace> {
+        checkNotClosed()
+        return detector.detect(bitmap)
+    }
+
+    /** Embeds an already-aligned 112x112 face crop (see [FaceAligner.align]) — for composable/advanced use. */
+    suspend fun embedFace(alignedFace: Bitmap): FaceEmbedding {
+        checkNotClosed()
+        return embedder.embed(alignedFace)
+    }
+
     /** @throws NoFaceDetectedException if the selfie has no detectable face. */
     suspend fun embedSelfie(selfie: Bitmap): FaceEmbedding {
+        checkNotClosed()
         val faces = detector.detect(selfie)
         val largest = faces.maxByOrNull { it.box.width() * it.box.height() }
             ?: throw NoFaceDetectedException("No face detected in selfie")
@@ -64,6 +90,7 @@ class FaceMatchEngine internal constructor(
 
     /** Null means no face was found in the photo — a valid outcome, not an error. */
     suspend fun scoreEventPhoto(selfieEmbedding: FaceEmbedding, eventPhoto: Bitmap): Float? {
+        checkNotClosed()
         val faces = detector.detect(eventPhoto)
         if (faces.isEmpty()) return null
         return faces.minOf { face ->
@@ -85,6 +112,7 @@ class FaceMatchEngine internal constructor(
         eventPhotos: List<EventPhotoInput>,
         threshold: Float = FaceMatcher.DEFAULT_THRESHOLD,
     ): List<EventPhotoMatchResult> {
+        checkNotClosed()
         val selfieEmbedding = embedSelfie(selfie)
         return eventPhotos.map { photo ->
             val distance = try {
@@ -102,6 +130,7 @@ class FaceMatchEngine internal constructor(
     }
 
     override fun close() {
+        closed = true
         detector.close()
         embedder.close()
     }

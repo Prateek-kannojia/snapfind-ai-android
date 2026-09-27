@@ -3,8 +3,10 @@ package com.example.snapfindai.facesdk.embedder
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
+import ai.onnxruntime.TensorInfo
 import android.graphics.Bitmap
 import com.example.snapfindai.facesdk.FaceAligner
+import com.example.snapfindai.facesdk.InvalidModelException
 import com.example.snapfindai.facesdk.api.FaceEmbedder
 import com.example.snapfindai.facesdk.model.FaceEmbedding
 import kotlinx.coroutines.Dispatchers
@@ -23,8 +25,46 @@ internal class OnnxFaceEmbedder(
 ) : FaceEmbedder {
 
     companion object {
-        private const val INPUT_NAME = "input.1"
+        internal const val INPUT_NAME = "input.1"
         private const val SIZE = FaceAligner.IMAGE_SIZE
+        internal const val EXPECTED_EMBEDDING_SIZE = 512L
+
+        /**
+         * Pure shape check, separated from session creation so it's unit
+         * testable without a real OrtSession -- ONNX Runtime's native
+         * library is Android-only and can't load inside a desktop JVM test.
+         * [outputShape] is the last dimension of the sole output tensor, or
+         * null if that couldn't be determined (a dynamic/unreported shape
+         * isn't itself an error -- only a *known-wrong* size is rejected).
+         */
+        internal fun validateShape(inputNames: Set<String>, outputCount: Int, outputShape: Long?) {
+            if (INPUT_NAME !in inputNames) {
+                throw InvalidModelException(
+                    "FaceEmbedder expects an input named '$INPUT_NAME', but this model's inputs " +
+                        "are: $inputNames. If this is a different embedder architecture, implement " +
+                        "FaceEmbedder yourself instead of loading it through createFromAsset/createFromBytes."
+                )
+            }
+            if (outputCount != 1) {
+                throw InvalidModelException(
+                    "FaceEmbedder expects exactly 1 output tensor (the embedding), but this " +
+                        "model has $outputCount."
+                )
+            }
+            if (outputShape != null && outputShape != -1L && outputShape != EXPECTED_EMBEDDING_SIZE) {
+                throw InvalidModelException(
+                    "FaceEmbedder expects a $EXPECTED_EMBEDDING_SIZE-D embedding output, but this " +
+                        "model produces a ${outputShape}-D one. Downstream cosine-distance " +
+                        "comparisons assume every embedding this SDK produces is the same length."
+                )
+            }
+        }
+    }
+
+    init {
+        val outputInfos = session.outputInfo.values
+        val tensorInfo = outputInfos.singleOrNull()?.info as? TensorInfo
+        validateShape(session.inputNames, outputInfos.size, tensorInfo?.shape?.lastOrNull())
     }
 
     override suspend fun embed(alignedFace: Bitmap): FaceEmbedding = withContext(Dispatchers.Default) {

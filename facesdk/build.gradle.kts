@@ -10,6 +10,9 @@ android {
     defaultConfig {
         minSdk = 24
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // Bundled into this module's AAR, applied automatically to any app
+        // that depends on :facesdk and enables R8 -- see consumer-rules.pro.
+        consumerProguardFiles("consumer-rules.pro")
     }
 
     buildTypes {

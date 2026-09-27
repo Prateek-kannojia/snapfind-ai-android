@@ -99,11 +99,38 @@ class ScrfdPostprocessTest {
     }
 
     @Test
-    fun `no anchor clearing DET_THRESH means no detections`() {
+    fun `no anchor clearing the detection threshold means no detections`() {
         val scores = FloatArray(8) { 0.1f }
         val faces = ScrfdPostprocess.decode(
             emptyOutputs(scores, FloatArray(32), FloatArray(80)), inputSize, inputSize, detScale = 1f,
         )
         assertEquals(0, faces.size)
+    }
+
+    @Test
+    fun `a custom detThreshold changes which anchors clear the bar -- proves FaceDetectorConfig actually reaches this math`() {
+        val scores = FloatArray(8) { if (it == 0) 0.3f else 0.1f } // below the 0.5 default, above a lowered 0.2
+        val outputs = emptyOutputs(scores, FloatArray(32), FloatArray(80))
+
+        val atDefault = ScrfdPostprocess.decode(outputs, inputSize, inputSize, detScale = 1f)
+        assertEquals(0, atDefault.size)
+
+        val atLoweredThreshold = ScrfdPostprocess.decode(outputs, inputSize, inputSize, detScale = 1f, detThreshold = 0.2f)
+        assertEquals(1, atLoweredThreshold.size)
+    }
+
+    @Test
+    fun `a custom nmsThreshold changes whether an overlapping duplicate survives`() {
+        val scores = FloatArray(8).also { it[0] = 0.9f; it[1] = 0.8f }
+        val boxes = FloatArray(32).also {
+            for (k in 0..1) for (i in 0..3) it[k * 4 + i] = 1f // identical boxes -> 100% overlap
+        }
+        val outputs = emptyOutputs(scores, boxes, FloatArray(80))
+
+        val atDefault = ScrfdPostprocess.decode(outputs, inputSize, inputSize, detScale = 1f)
+        assertEquals("default nmsThreshold (0.4) suppresses the 100%-overlapping duplicate", 1, atDefault.size)
+
+        val nmsDisabled = ScrfdPostprocess.decode(outputs, inputSize, inputSize, detScale = 1f, nmsThreshold = 1.0f)
+        assertEquals("overlap must be > threshold to suppress; nothing overlaps more than 100%", 2, nmsDisabled.size)
     }
 }

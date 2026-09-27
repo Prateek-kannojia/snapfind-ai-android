@@ -4,7 +4,9 @@ import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import android.graphics.Bitmap
+import com.example.snapfindai.facesdk.InvalidModelException
 import com.example.snapfindai.facesdk.api.FaceDetector
+import com.example.snapfindai.facesdk.api.FaceDetectorConfig
 import com.example.snapfindai.facesdk.model.DetectedFace
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -20,12 +22,41 @@ import kotlin.math.max
 internal class ScrfdFaceDetector(
     private val env: OrtEnvironment,
     private val session: OrtSession,
+    private val config: FaceDetectorConfig = FaceDetectorConfig(),
 ) : FaceDetector {
 
     companion object {
-        // Matches Face_recognition/core/settings.py FACE_DETECTOR_SIZE default (800).
-        private const val INPUT_SIZE = 800
-        private const val INPUT_NAME = "input.1"
+        internal const val INPUT_NAME = "input.1"
+        internal const val EXPECTED_OUTPUT_COUNT = 9 // 3 strides x (scores, bbox, kps)
+
+        /**
+         * Pure shape check, separated from session creation so it's unit
+         * testable without a real OrtSession -- ONNX Runtime's native
+         * library is Android-only and can't load inside a desktop JVM test.
+         */
+        internal fun validateShape(inputNames: Set<String>, outputNames: Set<String>) {
+            if (INPUT_NAME !in inputNames) {
+                throw InvalidModelException(
+                    "FaceDetector expects an SCRFD-shaped ONNX graph with an input named " +
+                        "'$INPUT_NAME', but this model's inputs are: $inputNames. " +
+                        "If this is a different model architecture, implement FaceDetector " +
+                        "yourself instead of loading it through createFromAsset/createFromBytes."
+                )
+            }
+            if (outputNames.size != EXPECTED_OUTPUT_COUNT) {
+                throw InvalidModelException(
+                    "FaceDetector expects an SCRFD-shaped ONNX graph with $EXPECTED_OUTPUT_COUNT " +
+                        "output tensors (3 strides x [scores, bbox, keypoints]), but this model has " +
+                        "${outputNames.size}: $outputNames. If this is a different model " +
+                        "architecture, implement FaceDetector yourself instead of loading it " +
+                        "through createFromAsset/createFromBytes."
+                )
+            }
+        }
+    }
+
+    init {
+        validateShape(session.inputNames, session.outputNames)
     }
 
     private class Letterboxed(val tensor: OnnxTensor, val detScale: Float, val inputSize: Int)
@@ -43,19 +74,22 @@ internal class ScrfdFaceDetector(
             }
         }
         input.tensor.close()
-        ScrfdPostprocess.decode(outputs, input.inputSize, input.inputSize, input.detScale)
+        ScrfdPostprocess.decode(
+            outputs, input.inputSize, input.inputSize, input.detScale,
+            detThreshold = config.detThreshold, nmsThreshold = config.nmsThreshold,
+        )
     }
 
     /**
      * insightface's SCRFD preprocessing (scrfd.py:162-163): letterbox into a
-     * square [INPUT_SIZE] canvas preserving aspect ratio, (pixel - 127.5) / 128.0,
-     * BGR->RGB swap, NCHW. detScale matches insightface's own det_scale
-     * (scrfd.py:286): for a square input size this is just newSize/max(w,h) —
-     * the ratio needed to map decoded boxes/landmarks back into original
-     * image pixels.
+     * square [FaceDetectorConfig.inputSize] canvas preserving aspect ratio,
+     * (pixel - 127.5) / 128.0, BGR->RGB swap, NCHW. detScale matches
+     * insightface's own det_scale (scrfd.py:286): for a square input size
+     * this is just newSize/max(w,h) — the ratio needed to map decoded
+     * boxes/landmarks back into original image pixels.
      */
     private fun preprocess(bitmap: Bitmap): Letterboxed {
-        val size = INPUT_SIZE
+        val size = config.inputSize
         val ratio = size.toFloat() / max(bitmap.width, bitmap.height)
         val newW = (bitmap.width * ratio).toInt().coerceAtLeast(1)
         val newH = (bitmap.height * ratio).toInt().coerceAtLeast(1)

@@ -22,20 +22,25 @@ interface FaceDetector : Closeable {
 
     companion object {
         /** The bundled, validated det_500m.onnx from this module's own assets. */
-        suspend fun create(context: Context): FaceDetector = createFromAsset(context, "models/det_500m.onnx")
+        suspend fun create(context: Context, config: FaceDetectorConfig = FaceDetectorConfig()): FaceDetector =
+            createFromAsset(context, "models/det_500m.onnx", config)
 
         /**
          * The same SCRFD implementation, loading a model from a different
          * asset path — e.g. a newer version of det_500m the host app bundles
          * itself. Reuses the real, validated preprocessing/decoding code;
          * nothing to reimplement, just point it at a different file.
+         * @throws com.example.snapfindai.facesdk.InvalidModelException if the model's input/output shape doesn't match what SCRFD expects.
          */
-        suspend fun createFromAsset(context: Context, assetPath: String): FaceDetector =
-            withContext(Dispatchers.Default) {
-                val env = OrtEnvironment.getEnvironment()
-                val session = OrtSessions.fromAsset(context, env, assetPath)
-                ScrfdFaceDetector(env, session)
-            }
+        suspend fun createFromAsset(
+            context: Context,
+            assetPath: String,
+            config: FaceDetectorConfig = FaceDetectorConfig(),
+        ): FaceDetector = withContext(Dispatchers.Default) {
+            val env = OrtEnvironment.getEnvironment()
+            val session = OrtSessions.fromAsset(context, env, assetPath)
+            ScrfdFaceDetector(env, session, config)
+        }
 
         /**
          * The same SCRFD implementation, loading a model from raw bytes —
@@ -43,11 +48,15 @@ interface FaceDetector : Closeable {
          * different asset layout entirely. Must be an SCRFD-shaped ONNX
          * graph (same inputs/outputs as det_500m); a different detector
          * architecture needs its own [FaceDetector] implementation instead.
+         * @throws com.example.snapfindai.facesdk.InvalidModelException if the model's input/output shape doesn't match what SCRFD expects.
          */
-        suspend fun createFromBytes(modelBytes: ByteArray): FaceDetector = withContext(Dispatchers.Default) {
+        suspend fun createFromBytes(
+            modelBytes: ByteArray,
+            config: FaceDetectorConfig = FaceDetectorConfig(),
+        ): FaceDetector = withContext(Dispatchers.Default) {
             val env = OrtEnvironment.getEnvironment()
             val session = OrtSessions.fromBytes(env, modelBytes)
-            ScrfdFaceDetector(env, session)
+            ScrfdFaceDetector(env, session, config)
         }
     }
 }
