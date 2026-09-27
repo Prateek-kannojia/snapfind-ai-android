@@ -1,14 +1,14 @@
 # SnapFind AI — Android Client
 
-An Android app that lets you find yourself in a batch of event photos. You pick a selfie and a ZIP archive of event photos, the app sends them to a backend server, and shows you every photo from the archive where your face was detected.
+An Android app that lets you find yourself in a batch of event photos. You pick a selfie and a ZIP archive of event photos, and the app matches faces **entirely on-device** — no upload, no network call, no server in the loop.
 
-The backend lives in `../Face_recognition/` (its own README covers the ML pipeline and API in depth). This doc covers the Android client only.
+That wasn't the original design. The app was first built against a backend (`../Face_recognition/`, its own README covers the ML pipeline and API) that uploads photos, matches server-side, and polls for results. As of 2026-09-27, matching has moved fully on-device, backed by a validated on-device SDK (`:facesdk`, its own Gradle module in this repo) built and proven against that same backend across three separate phases — detection, alignment, then end-to-end match decisions — each checked against the server's real output before moving to the next, not assumed correct. The server-calling code is still in the repo, intact, unused by the app today; see [How on-device matching actually works](#how-on-device-matching-actually-works) and [The dormant server path](#the-dormant-server-path-kept-not-deleted).
 
 ---
 
 ## The problem this solves
 
-After large events (weddings, parties, conferences), photographers distribute massive folders of unorganized photos. Finding photos of a specific person in an archive of thousands of images is a tedious, manual process. This app automates that: upload a selfie and the event archive, get back only the photos containing your face.
+After large events (weddings, parties, conferences), photographers distribute massive folders of unorganized photos. Finding photos of a specific person in an archive of thousands of images is a tedious, manual process. This app automates that: pick a selfie and the event archive, get back only the photos containing your face — matched right there on the phone.
 
 ---
 
@@ -18,16 +18,63 @@ After large events (weddings, parties, conferences), photographers distribute ma
 2. User picks a selfie from their gallery (the face to search for)
 3. User picks a ZIP file containing event photos
 4. User taps **Find My Photos**
-5. App uploads both files to the backend and triggers face matching
-6. App polls the backend every 2 seconds until processing is complete
-7. App navigates to the **Results Screen** showing matched photos in a grid
-8. User can scroll through and view every event photo they appear in
+5. App unzips the archive into local cache, and runs on-device face detection + matching against every extracted photo
+6. App navigates to the **Results Screen** showing matched photos in a grid
+7. User can scroll through and view every event photo they appear in
+
+No upload, no polling loop — steps 5-6 happen on the phone's CPU, typically in a few seconds for a handful of photos.
 
 ---
 
-## How the app communicates with the backend
+## How on-device matching actually works
 
-The backend has 4 API endpoints the app uses, in this exact sequence:
+`FindFacesInPhotosUseCase` (domain layer) owns the sequence:
+
+```
+1. FileHelper.unzip(zipFile, extractDir)
+   → extracts every photo from the ZIP into app cache, guarded against
+     "zip slip" (an entry trying to write outside extractDir)
+
+2. FaceMatchRepository.matchPhotos(selfie, eventPhotos, threshold)
+   → the actual matching, delegated to OnDeviceFaceMatchRepositoryImpl
+     (data layer), which wraps :facesdk's FaceMatchEngine
+
+3. Non-matched extracted photos are deleted
+   → only what the Results screen will actually display stays on disk
+```
+
+Inside `OnDeviceFaceMatchRepositoryImpl`, photos are **not** batch-decoded into memory as a list of Bitmaps — the SDK's `embedSelfie()`/`scoreEventPhoto()` primitives are called one photo at a time, each Bitmap recycled immediately after scoring. A batch of dozens of full-resolution phone photos held in memory simultaneously risks OOM; a job's worth of on-device history has never needed more than one or two decoded photos alive at once with this approach.
+
+`FaceMatchRepository` is a domain-layer interface (see `domain/repository/FaceMatchRepository.kt`) — deliberately named and shaped like `JobRepository` rather than "OnDeviceRepository", so a future server-backed implementation could satisfy the exact same contract without the use case or ViewModel changing. That's a real possibility left open, not a decision made — see [Cross-project status](../Face_recognition/DEEP_DIVE.md#cross-project-status) for the still-open server-vs-on-device routing question.
+
+## The `:facesdk` module
+
+A standalone Gradle module (`facesdk/`, sibling to `app/`) — no Compose, Hilt, or Retrofit dependency, so it could be published or reused independently of this app. Public API, two layers:
+
+- **The facade**, `FaceMatchEngine` — `create(context)` loads the bundled models and returns one object with `embedSelfie()`, `scoreEventPhoto()`, and the batch convenience `matchJob()`. Mirrors the backend's `face_matcher.py` job-level rules exactly (largest face wins for the selfie, closest face decides an event photo's distance) so the same job scores the same way on-device and on the server.
+- **The primitives**, independently usable: `FaceDetector` (SCRFD/`det_500m.onnx`), `FaceAligner` (insightface's `norm_crop`, ported), `FaceEmbedder` (`w600k_mbf.onnx`), `FaceMatcher` (cosine distance + threshold). Each interface lives in `facesdk/api/`; the one shipped implementation of each lives in its own package (`facesdk/detector/`, `facesdk/embedder/`) — not mixed into the interface file, so the algorithm-specific code isn't sitting next to the public contract it implements.
+
+**Swapping models:** each interface has three constructors — `create(context)` (the bundled, validated models), `createFromAsset(context, path)` (same validated pipeline code, a different file you bundle), `createFromBytes(bytes)` (same pipeline, a model from anywhere — downloaded, decrypted, wherever). Swapping to a genuinely different detector/embedder architecture means implementing `FaceDetector`/`FaceEmbedder` yourself and passing it to `FaceMatchEngine.create(detector, embedder)` instead.
+
+**How it was validated**, not assumed correct — three phases, each checked against the real backend before combining with the next:
+- **Detection** — SCRFD's anchor-decode/NMS math ported line-for-line from insightface's `scrfd.py`; boxes compared photo-for-photo against the real Python detector on the same images. Root-caused and fixed a genuine bug in the process: `BitmapFactory.decodeFile()` doesn't apply EXIF orientation the way the server's `cv2.imread()` does, silently handing the detector a rotated image for ~30% of real phone photos.
+- **Alignment** — the similarity-transform math (closed-form complex-number least-squares, equivalent to skimage's Umeyama solver for 5 points) verified against the reference to ~7e-5 float32 precision before any Kotlin was written.
+- **End-to-end matching** — `runJobMatching()` (the validation harness, `spike/TimingSpikeRunner.kt`) reproduced the server's real-job recall exactly on 3 hand-labeled jobs, then stress-tested against 22 additional mixed selfie/event-photo combinations built from a real 227-photo trip archive: 184 event photos, **99.1% match/no-match agreement** with the server, mean distance difference 0.013.
+- 21 unit tests (`facesdk/src/test/`) cover the actual math — `FaceMatcher`'s cosine distance, `FaceAligner`'s transform on planted known-answer point sets, `ScrfdPostprocess`'s anchor decode/NMS on synthetic model outputs — not just "it doesn't crash."
+
+## The dormant server path (kept, not deleted)
+
+The original backend-upload flow — `SnapFindApi.kt`, `JobRepository`/`JobRepositoryImpl`, `NetworkModule.kt` — is untouched code, just no longer called by `FindFacesInPhotosUseCase`. It's worth knowing two things about it if it's ever revived:
+
+1. **It predates this backend's storage migration and is already out of sync.** `SnapFindApi.uploadJob()` still calls the single-shot `POST /jobs/upload`, which the backend replaced with a presigned-URL, resumable multipart flow (`/jobs/upload/init` → presigned PUTs → `/jobs/upload/complete`) — see [Cross-project status](../Face_recognition/DEEP_DIVE.md#cross-project-status), item 2. Reviving this path means updating it to the new upload sequence, not just re-enabling a call site.
+2. **The threshold it used (0.5 in code, described as "current production" at 0.68-0.70 in docs) was never the same threshold the on-device path uses (0.60, `FaceMatcher.DEFAULT_THRESHOLD`)** — the two paths are tuned for different embedding models (DeepFace ArcFace server-side vs. `w600k_mbf` on-device) and are not interchangeable numbers.
+
+Original context on the server flow this was built against — 4 REST endpoints, a polling loop for a multi-minute CPU job, DeepFace/ArcFace at a 0.68 threshold — is preserved below for anyone reviving it, but describes dormant, not current, app behavior.
+
+<details>
+<summary>Original server-flow reference (dormant)</summary>
+
+The backend had 4 API endpoints the app called, in this sequence:
 
 ```
 1. POST /jobs/upload
@@ -53,13 +100,11 @@ The backend has 4 API endpoints the app uses, in this exact sequence:
    → app displays images using those URLs directly
 ```
 
-The reason for the polling loop: face matching takes 30 seconds to several minutes on CPU. If the app waited for a single HTTP response that long, Android's network layer would time out and show an error. By making the server return immediately and polling separately, the app stays responsive and shows the user that work is happening.
+The reason for the polling loop: face matching took 30 seconds to several minutes on CPU. If the app waited for a single HTTP response that long, Android's network layer would time out. By making the server return immediately and polling separately, the app stayed responsive and showed the user that work was happening.
 
----
+The backend used **DeepFace** with the **ArcFace** model to turn each face into a 512-number vector (an "embedding"). Matching meant computing the **cosine distance** between two embeddings — a value from `0.0` (identical) to `~1.0` (very different people). Anything under the configured threshold counted as a match. The full pipeline (detection, embedding, caching, parallelism) is documented in `../Face_recognition/README.md`.
 
-## Backend AI context (what's actually happening server-side)
-
-The backend uses **DeepFace** with the **ArcFace** model to turn each face into a 512-number vector (an "embedding"). Faces of the same person produce embeddings that are numerically close together; different people produce embeddings that are far apart. Matching a selfie against an event photo means computing the **cosine distance** between their two embeddings — a value from `0.0` (identical) to `~1.0` (very different people). Anything under the configured threshold (default `0.68`) counts as a match. The full pipeline (detection, embedding, caching, parallelism) is documented in `../Face_recognition/README.md` — worth reading if you need to explain *why* a job takes as long as it does, or why the threshold query param exists on `processJob()` in `SnapFindApi.kt`.
+</details>
 
 ---
 
@@ -83,29 +128,27 @@ The rule: each layer can only talk to the layer below it. The UI never directly 
 
 ### Data Layer
 
-**`SnapFindApi.kt`** — The Retrofit interface. Defines what the HTTP calls look like. Each function is a `suspend fun` (Kotlin coroutine) that represents one API call. The data classes next to it define exactly what JSON the backend sends back:
+**`OnDeviceFaceMatchRepositoryImpl.kt`** — The active repository. Wraps `:facesdk`'s `FaceMatchEngine`, lazily created on first use (guarded by a `Mutex`, not eagerly at DI-graph construction, so model loading never blocks app startup) and kept as a Hilt `@Singleton` so the ~16 MB of ONNX models load once, not per job. Decodes and scores event photos one at a time — see [How on-device matching actually works](#how-on-device-matching-actually-works) for why.
 
-```kotlin
-// This tells Retrofit: make a POST to /jobs/upload with two multipart fields
-@Multipart
-@POST("jobs/upload")
-suspend fun uploadJob(
-    @Part selfie: MultipartBody.Part,
-    @Part eventPhotosZip: MultipartBody.Part
-): UploadJobResponse
-```
+**`SnapFindApi.kt` / `JobRepositoryImpl.kt`** — The dormant server path. Still real, compiling code — see [The dormant server path](#the-dormant-server-path-kept-not-deleted) — just not in the active call graph.
 
-The data classes (like `UploadJobResponse`, `MatchItem`) must have field names that exactly match the JSON keys the backend sends. Gson (the JSON library) maps them automatically. If a field name is wrong, Gson silently gives you `null` instead of crashing, so mismatches are important to catch.
-
-**`JobRepositoryImpl.kt`** — The only class that knows how to talk to the backend, one API call per method (see `JobRepository.kt` below — the *sequence* of calls is a domain-layer concern, not this class's job). It also:
-- Converts Android `File` objects into Retrofit `MultipartBody.Part` (the format HTTP multipart uploads require)
-- Prepends the backend base URL to relative image paths returned by the server (e.g. `/jobs/x/matches/1/download` → `http://192.168.0.110:8000/jobs/x/matches/1/download`)
-
-**`FileHelper.kt`** — Android does not let you access files directly from a `Uri` (the way files are referenced in Android's content system). This utility copies the file content from the Uri into a real `File` in the app's cache directory so Retrofit can read it.
+**`FileHelper.kt`** — Two jobs: `uriToFile()` copies a picked `Uri`'s content into a real cache `File` (Android doesn't let you read a `Uri` directly the way file APIs expect); `unzip()` extracts a ZIP into a directory, rejecting any entry whose resolved path would land outside the target directory ("zip slip" — a zip is user-supplied input, worth the same suspicion as a downloaded one).
 
 ### Domain Layer
 
-**`JobRepository.kt`** — A Kotlin interface with one method per API call, deliberately kept "dumb" (no polling, no orchestration, no business decisions):
+**`FaceMatchRepository.kt`** — The active contract:
+
+```kotlin
+interface FaceMatchRepository {
+    suspend fun matchPhotos(selfie: File, eventPhotos: List<File>, threshold: Float): List<FaceMatchResult>
+}
+```
+
+Named and shaped like `JobRepository` deliberately — not `OnDeviceRepository` — so a server-backed implementation could satisfy this exact interface later without the use case or ViewModel changing. That's the seam a hybrid on-device/server routing decision would plug into, whenever that decision gets made.
+
+**`FaceMatchResult.kt`** — A plain domain type (`File` + `distance: Float`), not a reused Retrofit DTO. The old code returned `MatchItem` (a backend JSON shape — snake_case fields, a `download_url`) straight out of the domain layer, which is a real Clean Architecture violation: the domain layer shouldn't know what the backend's JSON looks like. This flow has nothing to do with the backend at all now, so it gets its own type.
+
+**`JobRepository.kt`** — The dormant server contract (unchanged, still compiles, just unused):
 
 ```kotlin
 interface JobRepository {
@@ -116,60 +159,36 @@ interface JobRepository {
 }
 ```
 
-This is the **contract** between the domain layer and the data layer. The ViewModel never talks to this directly — it goes through the use case below. This separation means you could swap the real implementation for a fake one in tests, or replace the backend with a different API, without touching the ViewModel or the use case's orchestration logic.
+**`FindFacesInPhotosUseCase.kt`** — Owns the on-device sequence end to end: unzip → `FaceMatchRepository.matchPhotos()` → delete the non-matched extracted photos → clean up the temp selfie/zip files in a `finally` block regardless of success or failure. Catches `NoFaceDetectedException` (thrown by the SDK when the selfie itself has no detectable face) specifically, to surface a clear user-facing message instead of a raw exception string. Defaults `threshold` to `FaceMatcher.DEFAULT_THRESHOLD` (0.60, `:facesdk`'s own constant) rather than a second hardcoded copy of that number.
 
-**`FindFacesInPhotosUseCase.kt`** — This is where the actual business logic for the feature lives, and it's the most important file to understand in this layer. The repository above only knows how to make individual API calls; this use case knows the *sequence* and the *rules*:
-- calls `uploadJob` → gets a `job_id`
-- calls `triggerProcessing`
-- polls `getJobStatus` every 2 seconds, up to 60 times (2 minute business-rule timeout), until `"completed"` or `"failed"`
-- calls `getJobMatches` and returns the result
-- **always** deletes the temporary selfie/zip files from cache in a `finally` block, whether the job succeeded or failed
-
-Returns `Result<List<MatchItem>>` so the ViewModel gets either a success value or a caught exception, never a crash. Splitting this out from the repository matters because "how the feature works end-to-end" (retry counts, timeout duration, cleanup) is a business decision, not a networking concern — if the matching strategy ever changes (e.g. an on-device path is added later), only this file needs a second implementation; the repository interface doesn't change.
+Returns `Result<List<FaceMatchResult>>` — same reasoning as before: the ViewModel gets a success value or a caught exception, never a crash.
 
 ### Presentation Layer
 
-**`UploadUiState.kt`** — A sealed interface that represents every possible state the upload screen can be in:
+**`UploadUiState.kt`** — Unchanged shape, new payload type:
 
 ```kotlin
 sealed interface UploadUiState {
     object Idle       : UploadUiState   // nothing happening, form visible
-    object Processing : UploadUiState   // upload + matching in progress
-    data class Success(val matches: List<MatchItem>) : UploadUiState
+    object Processing : UploadUiState   // unzip + on-device matching in progress
+    data class Success(val matches: List<FaceMatchResult>) : UploadUiState
     data class Error(val message: String) : UploadUiState
 }
 ```
 
-A sealed interface means there are no other possible states. The UI switches on this type and renders accordingly. This pattern eliminates an entire class of bugs where the UI gets into an undefined state (e.g. showing a loading spinner and an error message at the same time).
+**`UploadViewModel.kt`** — Unchanged responsibilities: converts picked `Uri`s to `File`s, calls `FindFacesInPhotosUseCase` on `viewModelScope`, updates state based on the result. No code here needed to change when the use case switched from server-calling to on-device — that's the point of the use-case boundary.
 
-**`UploadViewModel.kt`** — Sits between the UI and the use case. It:
-- Holds the current `UploadUiState` in a `MutableStateFlow` (a stream of values that Compose can observe)
-- Converts the picked `Uri`s to `File`s via `FileHelper`, then calls `FindFacesInPhotosUseCase` on `viewModelScope` — no API calls or polling logic here, that all lives in the use case
-- Updates the state to `Processing` while work is happening, then to `Success` or `Error` based on the result
-- The ViewModel survives screen rotations (unlike an Activity). If you rotate your phone while processing, the UI reconnects to the same ViewModel and the work continues uninterrupted.
+**`UploadScreen.kt`** — Same two-button-plus-submit flow; the "Processing" copy now reads "Finding matches on your device..." instead of "Uploading...".
 
-**`UploadScreen.kt`** — A Compose screen that observes `viewModel.uiState` and redraws whenever it changes:
-- In `Idle` state: shows two file picker buttons and a submit button
-- In `Processing` state: shows a loading indicator, buttons disabled
-- In `Success` state: navigates to ResultsScreen
-- In `Error` state: shows the error message
-
-**`ResultsScreen.kt`** — Displays matched photos in a 2-column grid using `LazyVerticalGrid`. Each photo is loaded from the backend download URL using **Coil's `AsyncImage`**. Coil handles network fetching, disk caching, and displaying a placeholder while the image loads — all in one line of code.
+**`ResultsScreen.kt`** — Displays matched photos in a 2-column grid via Coil's `AsyncImage` — now given a local `File` (`match.photo`) instead of a network URL. Coil supports `File` as a model source natively, no extra configuration needed.
 
 ---
 
 ## Dependency Injection with Hilt
 
-**Why DI at all?** `UploadViewModel` needs a `JobRepository`. `JobRepositoryImpl` needs a `SnapFindApi` and a base URL string. `SnapFindApi` needs a `Retrofit` instance. Without DI, you would build this chain manually every time and have no control over singleton vs new instance.
+**`FaceMatchModule.kt`** — The active binding: when something asks for a `FaceMatchRepository`, give it a `OnDeviceFaceMatchRepositoryImpl` singleton.
 
-Hilt is a DI framework that builds and manages this object graph for you.
-
-**`NetworkModule.kt`** — Tells Hilt how to build the network layer:
-- Provides a `Retrofit` singleton built with the backend base URL and Gson for JSON parsing
-- Provides a `SnapFindApi` singleton created from that Retrofit instance
-- Provides the base URL string as a `@Named("baseUrl")` value so the repository can prepend it to image URLs
-
-**`RepositoryModule.kt`** — Tells Hilt that when something asks for a `JobRepository`, give it a `JobRepositoryImpl` singleton.
+**`RepositoryModule.kt`** / **`NetworkModule.kt`** — The dormant server path's bindings (`JobRepository` → `JobRepositoryImpl`, the `Retrofit`/`SnapFindApi` singletons). Left in place; an unused Hilt binding is harmless, nothing in the graph requires every binding to be reached.
 
 Once these modules are set up, Hilt handles everything else. Any class annotated with `@Inject constructor(...)` gets its dependencies filled in automatically.
 
@@ -189,7 +208,7 @@ This line makes Compose subscribe to state updates. Whenever `uiState` changes (
 
 ## Networking with Retrofit + OkHttp
 
-Retrofit is a type-safe HTTP client. You define an interface describing your API and Retrofit generates the implementation. Under the hood, it uses OkHttp to make actual network requests.
+Part of the dormant server path — not exercised by the app's active flow today, kept for context on how it was built. Retrofit is a type-safe HTTP client. You define an interface describing your API and Retrofit generates the implementation. Under the hood, it uses OkHttp to make actual network requests.
 
 For multipart upload (sending files), the code manually builds `MultipartBody.Part` objects:
 
@@ -208,33 +227,47 @@ The backend's FastAPI endpoint receives this as an `UploadFile` with `field_name
 ## Project structure
 
 ```
-app/src/main/java/com/example/snapfindai/
-├── di/
-│   ├── NetworkModule.kt          # Provides Retrofit, SnapFindApi, base URL
-│   └── RepositoryModule.kt       # Binds JobRepositoryImpl to JobRepository interface
-├── data/
-│   ├── remote/
-│   │   └── SnapFindApi.kt        # Retrofit interface + all data classes
-│   └── repository/
-│       └── JobRepositoryImpl.kt  # One method per API call, no orchestration
-├── domain/
-│   ├── repository/
-│   │   └── JobRepository.kt      # Interface (the contract the use case uses)
-│   └── usecase/
-│       └── FindFacesInPhotosUseCase.kt  # Owns the upload→process→poll→fetch business logic
-├── presentation/
-│   └── screens/
-│       ├── upload/
-│       │   ├── UploadScreen.kt   # Compose UI for file picking and submission
-│       │   ├── UploadViewModel.kt # State management, calls the use case
-│       │   └── UploadUiState.kt  # All possible UI states as a sealed interface
-│       └── results/
-│           └── ResultsScreen.kt  # Photo grid with Coil image loading
-├── ui/theme/                     # Material 3 color, typography, theme setup
-├── utils/
-│   └── FileHelper.kt             # Converts Android URI to a File for Retrofit upload
-├── MainActivity.kt               # Single activity, hosts Compose navigation
-└── SnapFindApplication.kt        # Hilt application entry point (@HiltAndroidApp)
+SnapFindAI/                             # this Gradle project
+├── app/src/main/java/com/example/snapfindai/
+│   ├── di/
+│   │   ├── FaceMatchModule.kt        # Binds OnDeviceFaceMatchRepositoryImpl (ACTIVE)
+│   │   ├── NetworkModule.kt          # Retrofit/SnapFindApi/base URL (dormant path)
+│   │   └── RepositoryModule.kt       # Binds JobRepositoryImpl (dormant path)
+│   ├── data/
+│   │   ├── remote/
+│   │   │   └── SnapFindApi.kt        # Retrofit interface (dormant path)
+│   │   └── repository/
+│   │       ├── OnDeviceFaceMatchRepositoryImpl.kt  # Wraps facesdk's FaceMatchEngine (ACTIVE)
+│   │       └── JobRepositoryImpl.kt  # One method per API call (dormant path)
+│   ├── domain/
+│   │   ├── model/
+│   │   │   └── FaceMatchResult.kt    # Plain domain type: File + distance (ACTIVE)
+│   │   ├── repository/
+│   │   │   ├── FaceMatchRepository.kt  # The active contract
+│   │   │   └── JobRepository.kt        # The dormant contract
+│   │   └── usecase/
+│   │       └── FindFacesInPhotosUseCase.kt  # unzip -> match -> cleanup, on-device
+│   ├── presentation/
+│   │   └── screens/
+│   │       ├── upload/     # UploadScreen.kt, UploadViewModel.kt, UploadUiState.kt
+│   │       └── results/    # ResultsScreen.kt — grid of FaceMatchResult
+│   ├── ui/theme/                     # Material 3 color, typography, theme setup
+│   ├── utils/
+│   │   └── FileHelper.kt             # Uri->File, plus ZIP extraction
+│   ├── spike/                        # facesdk validation harness — see facesdk/README below
+│   ├── MainActivity.kt               # Single activity, hosts Compose navigation
+│   └── SnapFindApplication.kt        # Hilt application entry point (@HiltAndroidApp)
+│
+└── facesdk/                          # standalone module, no Compose/Hilt/Retrofit deps
+    └── src/main/java/com/example/snapfindai/facesdk/
+        ├── api/                      # FaceDetector, FaceEmbedder — interfaces only
+        ├── detector/                 # ScrfdFaceDetector + ScrfdPostprocess (the one impl)
+        ├── embedder/                 # OnnxFaceEmbedder (the one impl)
+        ├── model/                    # DetectedFace, FaceLandmarks, FaceEmbedding, ...
+        ├── internal/                 # OrtSessions — shared ONNX session loading
+        ├── FaceMatchEngine.kt        # the facade
+        ├── FaceAligner.kt, FaceMatcher.kt, FaceSdkLogger.kt, ...
+        └── (src/test/ — 21 unit tests)
 ```
 
 ---
@@ -243,25 +276,20 @@ app/src/main/java/com/example/snapfindai/
 
 ### Prerequisites
 - Android Studio Ladybug or newer
-- JDK 11+
+- JDK 17 (AGP 8.11.2 requires it — Android Studio bundles its own JBR if your `JAVA_HOME` is older)
 - Physical Android device or emulator (API 24+)
-- The FastAPI backend running on the same Wi-Fi network as your device
+- **No backend needed** — face matching runs entirely on-device now. The backend is only relevant if you're reviving the dormant server path.
 
 ### Steps
 
 1. Clone the project and open the `SnapFindAI` folder in Android Studio
-2. Wait for Gradle sync to complete
-3. Open `NetworkModule.kt` and update `BASE_URL` to your laptop's local IP address:
-   ```kotlin
-   private const val BASE_URL = "http://YOUR_LAPTOP_IP:8000/"
-   ```
-   Find your laptop's IP with `ipconfig` (Windows) or `ifconfig` (Mac/Linux). Use the IPv4 address under your Wi-Fi adapter.
-4. Make sure both your phone and laptop are on the same Wi-Fi network
-5. Start the FastAPI backend with `uvicorn main:app --host 0.0.0.0 --port 8000`
-6. Run the app on your device
+2. Wait for Gradle sync to complete (pulls in both `:app` and `:facesdk`)
+3. Run the app on your device — pick a selfie and a ZIP of event photos from the picker, tap "Find My Photos"
+
+The model weights (`det_500m.onnx`, `w600k_mbf.onnx`, ~16 MB total) live in `facesdk/src/main/assets/models/` and are gitignored — same rationale as the backend never committing its downloaded model weights. If they're missing, `FaceMatchEngine.create()` will fail to find the asset; pull them from wherever the backend's `models/insightface/models/buffalo_sc/` weights came from.
 
 ### Why cleartext HTTP is allowed
-`AndroidManifest.xml` contains `android:usesCleartextTraffic="true"`. This is required because the backend runs on plain HTTP (not HTTPS) on a local IP. For production, you would run the backend behind HTTPS and remove this flag.
+`AndroidManifest.xml` still contains `android:usesCleartextTraffic="true"`, a leftover from the dormant server path (the backend ran on plain HTTP on a local IP). Not load-bearing for the active on-device flow, but not removed either — reviving the server path would need it again.
 
 ---
 
@@ -273,15 +301,25 @@ app/src/main/java/com/example/snapfindai/
 | **Jetpack Compose** | Declarative UI — the screen automatically redraws when state changes, no manual view updates |
 | **ViewModel + StateFlow** | Survives screen rotations, single source of truth for UI state |
 | **Hilt** | Removes manual dependency wiring, makes code testable |
-| **Retrofit** | Type-safe HTTP — you define an interface, Retrofit handles the network calls |
-| **Coroutines** | Makes async code look sequential, no callback hell |
-| **Coil** | Native Compose image loading with caching — loads images from URLs in one line |
+| **ONNX Runtime (Android)** | Runs the on-device SCRFD detector + w600k_mbf embedder — the actual matching engine now |
+| **Coroutines** | Makes async code look sequential, no callback hell; every facesdk call is suspend |
+| **Coil** | Native Compose image loading — now loading local `File`s instead of network URLs |
 | **Clean Architecture** | Separation of concerns — each layer has one job |
+| **Retrofit + OkHttp** | Still present for the dormant server path; not used by the active flow |
+| **Robolectric + JUnit** | facesdk's 21 unit tests — real Android graphics classes (Bitmap, Canvas, RectF) under test, not stubbed out |
 
 ---
 
 ## Status & roadmap
 
 The original MVP checklist (Compose UI, Retrofit integration, Hilt DI, Coil image loading) is done.
+
+**On-device matching (2026-09-27): done.** Three validation phases (detection, alignment, end-to-end matching) each checked against the real backend, a standalone `:facesdk` module with a clean public API, and the real app wired to use it — no server call in the active flow. See [How on-device matching actually works](#how-on-device-matching-actually-works) and [The `:facesdk` module](#the-facesdk-module) above.
+
+**Still open:**
+- **SDK hardening** — four known gaps, not yet fixed: detection/NMS thresholds and input size are hardcoded rather than configurable; a wrong-shaped bring-your-own model fails with an unclear crash instead of a validated error at load time; `FaceMatchEngine` exposes its detector/embedder as independently closeable, nothing stops closing one while the engine's still in use; ProGuard consumer rules are effectively empty (masked only by minification being off everywhere right now).
+- **No local persistence.** Closing the app loses all match results — nothing survives a process restart. A prerequisite for an actual "download this photo" feature, not yet built.
+- **UI is intentionally bare-bones** — two buttons and a spinner, functionally correct, not redesigned.
+- **Server-vs-on-device routing is an open question, not a decision.** `FaceMatchRepository` is shaped so a server-backed implementation could plug in later without touching the use case — but whether/when that's worth building is undecided. See [Cross-project status](../Face_recognition/DEEP_DIVE.md#cross-project-status) in the backend's docs.
 
 Cross-project status (this app + the backend) is tracked in one place to avoid two docs drifting out of sync: see "Cross-project status" in `../Face_recognition/README.md`.
