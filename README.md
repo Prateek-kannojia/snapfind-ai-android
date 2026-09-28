@@ -35,7 +35,7 @@ Kotlin · Jetpack Compose · Hilt (DI) · ONNX Runtime (on-device inference) · 
 ## Run it
 
 1. Open in Android Studio, let Gradle sync (pulls in `:app` and `:facesdk`)
-2. Run the app — no backend required for face matching
+2. Run the app — no backend required for face matching. Debug builds bundle the models and work offline immediately; release builds download them once (~16MB) on first use instead, to keep the shipped APK small — see DEEP_DIVE.md.
 
 ## Project structure
 

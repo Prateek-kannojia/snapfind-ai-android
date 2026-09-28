@@ -54,13 +54,30 @@ A standalone Gradle module (`facesdk/`, sibling to `app/`) — no Compose, Hilt,
 - **The facade**, `FaceMatchEngine` — `create(context)` loads the bundled models and returns one object with `embedSelfie()`, `scoreEventPhoto()`, and the batch convenience `matchJob()`. Mirrors the backend's `face_matcher.py` job-level rules exactly (largest face wins for the selfie, closest face decides an event photo's distance) so the same job scores the same way on-device and on the server.
 - **The primitives**, independently usable: `FaceDetector` (SCRFD/`det_500m.onnx`), `FaceAligner` (insightface's `norm_crop`, ported), `FaceEmbedder` (`w600k_mbf.onnx`), `FaceMatcher` (cosine distance + threshold). Each interface lives in `facesdk/api/`; the one shipped implementation of each lives in its own package (`facesdk/detector/`, `facesdk/embedder/`) — not mixed into the interface file, so the algorithm-specific code isn't sitting next to the public contract it implements.
 
-**Swapping models:** each interface has three constructors — `create(context)` (the bundled, validated models), `createFromAsset(context, path)` (same validated pipeline code, a different file you bundle), `createFromBytes(bytes)` (same pipeline, a model from anywhere — downloaded, decrypted, wherever). Swapping to a genuinely different detector/embedder architecture means implementing `FaceDetector`/`FaceEmbedder` yourself and passing it to `FaceMatchEngine.create(detector, embedder)` instead.
+**Swapping models:** each interface has four constructors — `create(context)` (the bundled, validated models), `createFromAsset(context, path)` (same validated pipeline code, a different file you bundle), `createFromBytes(bytes)` (same pipeline, a model from anywhere), `createFromFile(file)` (same pipeline, loaded straight from a local file path — no buffering the whole model into memory first, which matters at ~14MB; this is what a downloaded-and-cached file uses). Swapping to a genuinely different detector/embedder architecture means implementing `FaceDetector`/`FaceEmbedder` yourself and passing it to `FaceMatchEngine.create(detector, embedder)` instead. `FaceDetectorConfig` (detection threshold, NMS threshold, input size) is a constructor parameter throughout, not a hardcoded constant.
+
+**Getting the model bytes onto the device is a separate concern from turning them into a working detector/embedder** — see [Model distribution](#model-distribution-why-release-builds-download-instead-of-bundling) below. `ModelDownloader` (also in `facesdk`) is generic: it knows how to fetch-and-cache-and-verify a file from *any* URL, with zero knowledge of what's inside it — a third-party app built on this SDK can point it at their own model, their own URL, their own checksum, and it composes with `createFromFile()` exactly the same way ours does.
+
+**Defensive by construction, not just by convention:**
+- A wrong-shaped bring-your-own model (e.g. an embedder loaded into the detector slot) is rejected at construction with a clear `InvalidModelException`, not a cryptic crash the first time `detect()`/`embed()` runs.
+- `FaceMatchEngine` doesn't expose its detector/embedder as independently closeable — `detectFaces()`/`embedFace()` pass-through methods instead — and using the engine after `close()` throws immediately rather than misbehaving quietly.
+- Real ProGuard consumer rules (`consumer-rules.pro`, protecting ONNX Runtime's JNI-reflected classes) ship in the AAR automatically for any app that depends on this module and enables R8.
 
 **How it was validated**, not assumed correct — three phases, each checked against the real backend before combining with the next:
 - **Detection** — SCRFD's anchor-decode/NMS math ported line-for-line from insightface's `scrfd.py`; boxes compared photo-for-photo against the real Python detector on the same images. Root-caused and fixed a genuine bug in the process: `BitmapFactory.decodeFile()` doesn't apply EXIF orientation the way the server's `cv2.imread()` does, silently handing the detector a rotated image for ~30% of real phone photos.
 - **Alignment** — the similarity-transform math (closed-form complex-number least-squares, equivalent to skimage's Umeyama solver for 5 points) verified against the reference to ~7e-5 float32 precision before any Kotlin was written.
 - **End-to-end matching** — `runJobMatching()` (the validation harness, `spike/TimingSpikeRunner.kt`) reproduced the server's real-job recall exactly on 3 hand-labeled jobs, then stress-tested against 22 additional mixed selfie/event-photo combinations built from a real 227-photo trip archive: 184 event photos, **99.1% match/no-match agreement** with the server, mean distance difference 0.013.
-- 21 unit tests (`facesdk/src/test/`) cover the actual math — `FaceMatcher`'s cosine distance, `FaceAligner`'s transform on planted known-answer point sets, `ScrfdPostprocess`'s anchor decode/NMS on synthetic model outputs — not just "it doesn't crash."
+- 38 unit tests (`facesdk/src/test/`) cover the actual math and behavior — `FaceMatcher`'s cosine distance, `FaceAligner`'s transform on planted known-answer point sets, `ScrfdPostprocess`'s anchor decode/NMS on synthetic model outputs, model-shape validation, the engine's closed-state guard, `ModelDownloader`'s cache/verify/re-download logic against local `file://` URLs — not just "it doesn't crash."
+
+## Model distribution — why release builds download instead of bundling
+
+The two ONNX models are ~16MB combined. Bundling them in `facesdk/src/main/assets/` (what earlier builds did) meant every install paid that cost even though most of a typical app's users never touch the feature on day one. They now live in `facesdk/src/debug/assets/models/` instead — Android only includes debug-variant assets in debug builds, so:
+- **Debug builds** (what local development and `spike/TimingSpikeRunner` use) — unchanged, models present, works offline immediately, zero friction.
+- **Release builds** — genuinely ship with neither file. Confirmed by unzipping a built release APK and checking for `.onnx` files directly, not just trusting the Gradle config; the APK shrank by ~15MB after the move.
+
+`OnDeviceFaceMatchRepositoryImpl` downloads both models on first use via `ModelDownloader`, then reuses the cached copy on every job after that — never re-downloading once a valid copy exists. Each download is verified against a known SHA-256 checksum before being trusted; a mismatch (corrupted transfer, interrupted download) is discarded, never cached, and reported as an error rather than silently handing a broken model to the detector. Models are hosted as a GitHub Release asset on this repo (tag `models-v1`) — free, versioned, no backend dependency for the on-device flow to work.
+
+**Known UX gap, not yet fixed:** the download currently happens silently inside the existing "Processing" step the first time a user submits a job — there's no dedicated screen explaining that ~16MB is about to download, and no real progress bar shown (`ModelDownloader` already supports an `onProgress` callback; it's just not wired up to any UI yet). A proper first-run setup screen is the next piece of work here, not a redesign of the download mechanism itself.
 
 ## The dormant server path (kept, not deleted)
 
@@ -259,15 +276,17 @@ SnapFindAI/                             # this Gradle project
 │   └── SnapFindApplication.kt        # Hilt application entry point (@HiltAndroidApp)
 │
 └── facesdk/                          # standalone module, no Compose/Hilt/Retrofit deps
+    ├── src/debug/assets/models/      # bundled models -- debug builds only (see Model distribution)
     └── src/main/java/com/example/snapfindai/facesdk/
-        ├── api/                      # FaceDetector, FaceEmbedder — interfaces only
+        ├── api/                      # FaceDetector, FaceEmbedder, FaceDetectorConfig — interfaces + config
         ├── detector/                 # ScrfdFaceDetector + ScrfdPostprocess (the one impl)
         ├── embedder/                 # OnnxFaceEmbedder (the one impl)
         ├── model/                    # DetectedFace, FaceLandmarks, FaceEmbedding, ...
         ├── internal/                 # OrtSessions — shared ONNX session loading
         ├── FaceMatchEngine.kt        # the facade
-        ├── FaceAligner.kt, FaceMatcher.kt, FaceSdkLogger.kt, ...
-        └── (src/test/ — 21 unit tests)
+        ├── ModelDownloader.kt        # generic fetch+cache+checksum-verify, for release builds
+        ├── FaceAligner.kt, FaceMatcher.kt, FaceSdkLogger.kt, InvalidModelException.kt, ...
+        └── (src/test/ — 38 unit tests)
 ```
 
 ---
@@ -279,6 +298,7 @@ SnapFindAI/                             # this Gradle project
 - JDK 17 (AGP 8.11.2 requires it — Android Studio bundles its own JBR if your `JAVA_HOME` is older)
 - Physical Android device or emulator (API 24+)
 - **No backend needed** — face matching runs entirely on-device now. The backend is only relevant if you're reviving the dormant server path.
+- **Internet needed on first launch, release builds only.** Debug builds bundle the models and work offline immediately; release builds download them once (~16 MB) and cache them — see [Model distribution](#model-distribution-why-release-builds-download-instead-of-bundling).
 
 ### Steps
 
@@ -286,7 +306,7 @@ SnapFindAI/                             # this Gradle project
 2. Wait for Gradle sync to complete (pulls in both `:app` and `:facesdk`)
 3. Run the app on your device — pick a selfie and a ZIP of event photos from the picker, tap "Find My Photos"
 
-The model weights (`det_500m.onnx`, `w600k_mbf.onnx`, ~16 MB total) live in `facesdk/src/main/assets/models/` and are gitignored — same rationale as the backend never committing its downloaded model weights. If they're missing, `FaceMatchEngine.create()` will fail to find the asset; pull them from wherever the backend's `models/insightface/models/buffalo_sc/` weights came from.
+The model weights (`det_500m.onnx`, `w600k_mbf.onnx`, ~16 MB total) live in `facesdk/src/debug/assets/models/` and are gitignored — same rationale as the backend never committing its downloaded model weights. They're only bundled in debug builds; if they're missing there, `FaceDetector.create()`/`FaceEmbedder.create()` will fail to find the asset — pull them from wherever the backend's `models/insightface/models/buffalo_sc/` weights came from. Release builds don't need them locally at all — they download from the GitHub Release instead.
 
 ### Why cleartext HTTP is allowed
 `AndroidManifest.xml` still contains `android:usesCleartextTraffic="true"`, a leftover from the dormant server path (the backend ran on plain HTTP on a local IP). Not load-bearing for the active on-device flow, but not removed either — reviving the server path would need it again.
@@ -306,7 +326,8 @@ The model weights (`det_500m.onnx`, `w600k_mbf.onnx`, ~16 MB total) live in `fac
 | **Coil** | Native Compose image loading — now loading local `File`s instead of network URLs |
 | **Clean Architecture** | Separation of concerns — each layer has one job |
 | **Retrofit + OkHttp** | Still present for the dormant server path; not used by the active flow |
-| **Robolectric + JUnit** | facesdk's 21 unit tests — real Android graphics classes (Bitmap, Canvas, RectF) under test, not stubbed out |
+| **`java.net.URL` (plain, no library)** | `ModelDownloader`'s model fetch — deliberately no Retrofit/Ktor dependency, so facesdk doesn't force a networking stack on whatever a host app already uses |
+| **Robolectric + JUnit** | facesdk's 38 unit tests — real Android graphics classes (Bitmap, Canvas, RectF) under test, not stubbed out |
 
 ---
 
@@ -316,8 +337,12 @@ The original MVP checklist (Compose UI, Retrofit integration, Hilt DI, Coil imag
 
 **On-device matching (2026-09-27): done.** Three validation phases (detection, alignment, end-to-end matching) each checked against the real backend, a standalone `:facesdk` module with a clean public API, and the real app wired to use it — no server call in the active flow. See [How on-device matching actually works](#how-on-device-matching-actually-works) and [The `:facesdk` module](#the-facesdk-module) above.
 
+**SDK hardening (2026-09-27): done.** The four gaps flagged in an architecture review are fixed: `FaceDetectorConfig` makes detection/NMS thresholds and input size real constructor parameters instead of hardcoded constants; a wrong-shaped bring-your-own model is rejected at construction with a clear `InvalidModelException`; `FaceMatchEngine` no longer exposes its detector/embedder as independently closeable, and using it after `close()` throws instead of misbehaving quietly; real ProGuard consumer rules ship in the AAR automatically. 12 tests added for this alone.
+
+**Model distribution (2026-09-27): done.** Release builds no longer bundle the ~16MB of ONNX models at all — moved to a debug-only asset source set, fetched and cached on first use instead via a new `ModelDownloader`, checksum-verified, hosted as a GitHub Release asset. Confirmed on a real device: fresh install (uninstalled first, no cached models anywhere), ran the real upload flow with no shortcuts, downloaded both models on first use, same 4/4 expected matches as every prior run. See [Model distribution](#model-distribution-why-release-builds-download-instead-of-bundling) above.
+
 **Still open:**
-- **SDK hardening** — four known gaps, not yet fixed: detection/NMS thresholds and input size are hardcoded rather than configurable; a wrong-shaped bring-your-own model fails with an unclear crash instead of a validated error at load time; `FaceMatchEngine` exposes its detector/embedder as independently closeable, nothing stops closing one while the engine's still in use; ProGuard consumer rules are effectively empty (masked only by minification being off everywhere right now).
+- **No first-run download experience.** The model download currently happens silently inside the existing "Processing" step — no dedicated screen explaining ~16MB is about to download, no real progress bar shown (the download mechanism already supports progress reporting; it's just not wired to any UI yet). The next piece of work here.
 - **No local persistence.** Closing the app loses all match results — nothing survives a process restart. A prerequisite for an actual "download this photo" feature, not yet built.
 - **UI is intentionally bare-bones** — two buttons and a spinner, functionally correct, not redesigned.
 - **Server-vs-on-device routing is an open question, not a decision.** `FaceMatchRepository` is shaped so a server-backed implementation could plug in later without touching the use case — but whether/when that's worth building is undecided. See [Cross-project status](../Face_recognition/DEEP_DIVE.md#cross-project-status) in the backend's docs.
