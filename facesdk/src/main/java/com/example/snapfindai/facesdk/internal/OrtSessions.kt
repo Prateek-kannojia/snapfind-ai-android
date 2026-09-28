@@ -20,4 +20,8 @@ internal object OrtSessions {
 
     fun fromBytes(env: OrtEnvironment, modelBytes: ByteArray): OrtSession =
         env.createSession(modelBytes, OrtSession.SessionOptions())
+
+    /** Loads straight from a file path -- avoids buffering the whole model into a ByteArray first, which matters for a downloaded-and-cached ~14MB file. */
+    fun fromFile(env: OrtEnvironment, filePath: String): OrtSession =
+        env.createSession(filePath, OrtSession.SessionOptions())
 }

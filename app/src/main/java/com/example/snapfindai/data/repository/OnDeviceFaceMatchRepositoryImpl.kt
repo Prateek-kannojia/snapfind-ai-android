@@ -7,6 +7,9 @@ import com.example.snapfindai.domain.repository.FaceMatchRepository
 import com.example.snapfindai.facesdk.BitmapDecoder
 import com.example.snapfindai.facesdk.FaceMatchEngine
 import com.example.snapfindai.facesdk.FaceMatcher
+import com.example.snapfindai.facesdk.ModelDownloader
+import com.example.snapfindai.facesdk.api.FaceDetector
+import com.example.snapfindai.facesdk.api.FaceEmbedder
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -30,10 +33,37 @@ class OnDeviceFaceMatchRepositoryImpl @Inject constructor(
     private val engineMutex = Mutex()
     @Volatile private var engine: FaceMatchEngine? = null
 
+    private companion object {
+        // Debug builds bundle these as facesdk/src/debug/assets/models/ for
+        // fast local iteration; release builds have no bundled models at
+        // all (so the APK isn't ~16MB heavier for every install) and fetch
+        // them here instead, on first use, caching them after. Hosted as a
+        // GitHub Release asset -- same repo, versioned, free, no backend
+        // needed for the app's on-device flow to work.
+        private const val MODEL_RELEASE_BASE =
+            "https://github.com/Prateek-kannojia/snapfind-ai-android/releases/download/models-v1"
+        private const val DETECTOR_MODEL_URL = "$MODEL_RELEASE_BASE/det_500m.onnx"
+        private const val EMBEDDER_MODEL_URL = "$MODEL_RELEASE_BASE/w600k_mbf.onnx"
+        private const val DETECTOR_MODEL_SHA256 = "5e4447f50245bbd7966bd6c0fa52938c61474a04ec7def48753668a9d8b4ea3a"
+        private const val EMBEDDER_MODEL_SHA256 = "9cc6e4a75f0e2bf0b1aed94578f144d15175f357bdc05e815e5c4a02b319eb4f"
+    }
+
     private suspend fun engine(): FaceMatchEngine =
         engine ?: engineMutex.withLock {
-            engine ?: FaceMatchEngine.create(context).also { engine = it }
+            engine ?: buildEngine().also { engine = it }
         }
+
+    private suspend fun buildEngine(): FaceMatchEngine {
+        val detectorFile = ModelDownloader.getOrDownload(
+            context, DETECTOR_MODEL_URL, "det_500m.onnx", DETECTOR_MODEL_SHA256,
+        )
+        val embedderFile = ModelDownloader.getOrDownload(
+            context, EMBEDDER_MODEL_URL, "w600k_mbf.onnx", EMBEDDER_MODEL_SHA256,
+        )
+        val detector = FaceDetector.createFromFile(detectorFile)
+        val embedder = FaceEmbedder.createFromFile(embedderFile)
+        return FaceMatchEngine.create(detector, embedder)
+    }
 
     override suspend fun matchPhotos(
         selfie: File,

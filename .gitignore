@@ -1,5 +1,6 @@
 *.iml
 .gradle
+.kotlin/
 /local.properties
 /.idea/
 .DS_Store
@@ -10,9 +11,11 @@
 local.properties
 
 # Model weights for facesdk — not committed, same as how the backend never
-# commits downloaded model weights. Bundled into the APK for now to iterate
-# fast; production will fetch them on first app install instead.
-facesdk/src/main/assets/models/
+# commits downloaded model weights. Debug-only assets (fast local iteration,
+# TimingSpikeRunner, etc.) -- release builds fetch them at runtime instead
+# via ModelDownloader, so they're not bundled into a shipped APK at all.
+# Hosted as a GitHub Release asset (see OnDeviceFaceMatchRepositoryImpl).
+facesdk/src/debug/assets/models/
 
 # adb-pulled debug output from the spike — regenerate locally, never commit.
 /*.csv

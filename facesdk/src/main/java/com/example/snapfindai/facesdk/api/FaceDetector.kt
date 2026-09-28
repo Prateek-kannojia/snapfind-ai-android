@@ -9,6 +9,7 @@ import com.example.snapfindai.facesdk.model.DetectedFace
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.Closeable
+import java.io.File
 
 /**
  * Finds faces (box + 5 landmarks) in a decoded bitmap. The only shipped
@@ -56,6 +57,23 @@ interface FaceDetector : Closeable {
         ): FaceDetector = withContext(Dispatchers.Default) {
             val env = OrtEnvironment.getEnvironment()
             val session = OrtSessions.fromBytes(env, modelBytes)
+            ScrfdFaceDetector(env, session, config)
+        }
+
+        /**
+         * The same SCRFD implementation, loading a model from a local file —
+         * e.g. one downloaded and cached at runtime (see
+         * [com.example.snapfindai.facesdk.ModelDownloader]). Loads straight
+         * from disk rather than buffering the whole file into memory first,
+         * which matters for a model this size.
+         * @throws com.example.snapfindai.facesdk.InvalidModelException if the model's input/output shape doesn't match what SCRFD expects.
+         */
+        suspend fun createFromFile(
+            file: File,
+            config: FaceDetectorConfig = FaceDetectorConfig(),
+        ): FaceDetector = withContext(Dispatchers.Default) {
+            val env = OrtEnvironment.getEnvironment()
+            val session = OrtSessions.fromFile(env, file.absolutePath)
             ScrfdFaceDetector(env, session, config)
         }
     }

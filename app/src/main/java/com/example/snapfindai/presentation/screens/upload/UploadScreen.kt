@@ -51,7 +51,11 @@ fun UploadScreen(
                 is UploadUiState.Processing -> {
                     CircularProgressIndicator()
                     Spacer(modifier = Modifier.height(16.dp))
-                    Text("Finding matches on your device... This may take a while.", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        "Finding matches on your device... First launch may take longer " +
+                            "while the matching model downloads (one-time, ~16MB).",
+                        style = MaterialTheme.typography.bodyLarge
+                    )
                 }
                 else -> {
                     Text("Step 1: Select Your Selfie", style = MaterialTheme.typography.titleMedium)

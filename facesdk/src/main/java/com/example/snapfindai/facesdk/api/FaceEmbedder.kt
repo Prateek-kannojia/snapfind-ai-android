@@ -9,6 +9,7 @@ import com.example.snapfindai.facesdk.model.FaceEmbedding
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.Closeable
+import java.io.File
 
 /**
  * Embeds an aligned 112x112 face crop (see
@@ -47,6 +48,19 @@ interface FaceEmbedder : Closeable {
         suspend fun createFromBytes(modelBytes: ByteArray): FaceEmbedder = withContext(Dispatchers.Default) {
             val env = OrtEnvironment.getEnvironment()
             val session = OrtSessions.fromBytes(env, modelBytes)
+            OnnxFaceEmbedder(env, session)
+        }
+
+        /**
+         * The same w600k_mbf implementation, loading a model from a local
+         * file — e.g. one downloaded and cached at runtime (see
+         * [com.example.snapfindai.facesdk.ModelDownloader]). Loads straight
+         * from disk rather than buffering the whole file into memory first,
+         * which matters for a model this size.
+         */
+        suspend fun createFromFile(file: File): FaceEmbedder = withContext(Dispatchers.Default) {
+            val env = OrtEnvironment.getEnvironment()
+            val session = OrtSessions.fromFile(env, file.absolutePath)
             OnnxFaceEmbedder(env, session)
         }
     }
