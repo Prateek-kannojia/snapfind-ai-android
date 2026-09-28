@@ -3,6 +3,17 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Only needed to save photos to the gallery on Android 9 (API 28) and
+         below. Android 10+ inserts into MediaStore without this permission
+         at all (scoped storage). maxSdkVersion means it's simply not
+         requested on newer OS versions. -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+    <!-- Android 13+ (API 33) requires this to show any notification at all,
+         including the download-progress/completed one. Harmless to declare
+         on older versions: it's simply not a runtime permission there. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:name=".SnapFindApplication"

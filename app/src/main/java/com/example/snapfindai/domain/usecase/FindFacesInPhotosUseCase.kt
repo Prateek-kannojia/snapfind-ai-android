@@ -2,6 +2,7 @@ package com.example.snapfindai.domain.usecase
 
 import com.example.snapfindai.domain.model.FaceMatchResult
 import com.example.snapfindai.domain.repository.FaceMatchRepository
+import com.example.snapfindai.domain.repository.JobHistoryRepository
 import com.example.snapfindai.facesdk.FaceMatcher
 import com.example.snapfindai.facesdk.NoFaceDetectedException
 import com.example.snapfindai.utils.FileHelper
@@ -13,11 +14,13 @@ import javax.inject.Inject
 //   - decide what counts as a failure, and give it a clear message
 //   - clean up temp files when done -- but NOT the matched photos
 //     themselves, since ResultsScreen still needs to display them
+//   - persist the result so it survives an app restart
 //
 // The repository just decides matches. The ViewModel just drives UI state.
 // This class is the only place that knows HOW the feature works end-to-end.
 class FindFacesInPhotosUseCase @Inject constructor(
     private val faceMatchRepository: FaceMatchRepository,
+    private val jobHistoryRepository: JobHistoryRepository,
 ) {
     suspend operator fun invoke(
         selfieFile: File,
@@ -39,7 +42,11 @@ class FindFacesInPhotosUseCase @Inject constructor(
             val matchedFiles = matches.map { it.photo }.toSet()
             eventPhotos.filterNot { it in matchedFiles }.forEach { it.delete() }
 
-            Result.success(matches)
+            // Relocates matched photos out of the cache-derived extractDir
+            // into stable storage, and replaces whatever job was saved
+            // before -- the returned list points at the new locations.
+            val persisted = jobHistoryRepository.saveJob(threshold, matches)
+            Result.success(persisted)
         } catch (e: NoFaceDetectedException) {
             Result.failure(Exception("We couldn't find a face in your selfie. Try a clearer, well-lit photo.", e))
         } catch (e: Exception) {

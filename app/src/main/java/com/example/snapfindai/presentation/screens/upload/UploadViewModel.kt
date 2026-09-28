@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.snapfindai.domain.usecase.FindFacesInPhotosUseCase
+import com.example.snapfindai.domain.usecase.GetLastJobUseCase
 import com.example.snapfindai.utils.FileHelper
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
@@ -23,11 +24,22 @@ import javax.inject.Inject
 // No API calls, no polling, no business decisions here.
 @HiltViewModel
 class UploadViewModel @Inject constructor(
-    private val findFacesInPhotos: FindFacesInPhotosUseCase
+    private val findFacesInPhotos: FindFacesInPhotosUseCase,
+    private val getLastJob: GetLastJobUseCase,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow<UploadUiState>(UploadUiState.Idle)
     val uiState: StateFlow<UploadUiState> = _uiState.asStateFlow()
+
+    init {
+        // Resume the last completed job, if any, so reopening the app
+        // after it was closed shows results again instead of a blank form.
+        viewModelScope.launch {
+            getLastJob()?.matches?.takeIf { it.isNotEmpty() }?.let { matches ->
+                _uiState.value = UploadUiState.Success(matches)
+            }
+        }
+    }
 
     fun submitJob(context: Context, selfieUri: Uri, zipUri: Uri) {
         _uiState.value = UploadUiState.Processing
