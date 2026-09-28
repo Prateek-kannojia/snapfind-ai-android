@@ -12,7 +12,8 @@ Backend lives in [`../Face_recognition/`](../Face_recognition/) — no longer ca
 
 1. Pick a selfie + a ZIP of event photos
 2. Tap "Find My Photos" — unzips locally, matches on-device
-3. Results screen shows every matched photo in a grid
+3. Results screen shows every matched photo in a grid — tap one for a full-screen swipeable view, long-press to select multiple and remove or download them, or download all straight to the system gallery
+4. Results survive closing the app — the last completed job reloads automatically on relaunch
 
 ## Architecture
 
@@ -30,7 +31,7 @@ The use case (`FindFacesInPhotosUseCase`) owns the actual sequence: unzip → ma
 
 ## Tech stack
 
-Kotlin · Jetpack Compose · Hilt (DI) · ONNX Runtime (on-device inference) · Coroutines + StateFlow · Coil (image loading) · Clean Architecture · Retrofit (dormant server path, kept not deleted)
+Kotlin · Jetpack Compose · Hilt (DI) · ONNX Runtime (on-device inference) · Coroutines + StateFlow · Coil (image loading) · Room (last-job persistence) · MediaStore (gallery save) · Clean Architecture · Retrofit (dormant server path, kept not deleted)
 
 ## Run it
 
@@ -42,9 +43,9 @@ Kotlin · Jetpack Compose · Hilt (DI) · ONNX Runtime (on-device inference) · 
 ```
 app/src/main/java/com/example/snapfindai/
 ├── di/            # Hilt modules
-├── data/          # repository implementations (active: on-device; dormant: Retrofit)
-├── domain/        # repository interfaces, domain models, the use case
-├── presentation/  # Compose screens + ViewModels
+├── data/          # repository implementations (active: on-device, Room, MediaStore; dormant: Retrofit)
+├── domain/        # repository interfaces, domain models, use cases
+├── presentation/  # Compose screens + ViewModels (upload, results, full-screen viewer)
 └── utils/
 
 facesdk/           # standalone on-device face-matching SDK, sibling module

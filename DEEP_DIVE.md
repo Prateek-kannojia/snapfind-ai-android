@@ -20,7 +20,8 @@ After large events (weddings, parties, conferences), photographers distribute ma
 4. User taps **Find My Photos**
 5. App unzips the archive into local cache, and runs on-device face detection + matching against every extracted photo
 6. App navigates to the **Results Screen** showing matched photos in a grid
-7. User can scroll through and view every event photo they appear in
+7. User can scroll through, tap any photo to open it full-screen and swipe between matches, long-press to enter selection mode (batch remove or batch download), or download all/a single photo straight to the system gallery
+8. Closing and reopening the app still shows the last job's results — nothing is lost on restart
 
 No upload, no polling loop — steps 5-6 happen on the phone's CPU, typically in a few seconds for a handful of photos.
 
@@ -78,6 +79,24 @@ The two ONNX models are ~16MB combined. Bundling them in `facesdk/src/main/asset
 `OnDeviceFaceMatchRepositoryImpl` downloads both models on first use via `ModelDownloader`, then reuses the cached copy on every job after that — never re-downloading once a valid copy exists. Each download is verified against a known SHA-256 checksum before being trusted; a mismatch (corrupted transfer, interrupted download) is discarded, never cached, and reported as an error rather than silently handing a broken model to the detector. Models are hosted as a GitHub Release asset on this repo (tag `models-v1`) — free, versioned, no backend dependency for the on-device flow to work.
 
 **Known UX gap, not yet fixed:** the download currently happens silently inside the existing "Processing" step the first time a user submits a job — there's no dedicated screen explaining that ~16MB is about to download, and no real progress bar shown (`ModelDownloader` already supports an `onProgress` callback; it's just not wired up to any UI yet). A proper first-run setup screen is the next piece of work here, not a redesign of the download mechanism itself.
+
+## Results persistence, gallery save, and the full-screen viewer
+
+Four related gaps existed after on-device matching first shipped: results didn't survive an app restart, matched photos lived only in `cacheDir` (OS-clearable at any time), there was no way to get a match into the phone's actual photo gallery, and tapping a photo did nothing. All four are now solved together, because they share one root cause: nothing about a completed job outlived the in-memory `UploadUiState`.
+
+**Persistence — Room, deliberately scoped to one job.** `SnapFindDatabase` (`data/local/`) has two tables: `jobs` (one row per completed match job — timestamp, threshold) and `matched_photos` (foreign-keyed to a job, `ON DELETE CASCADE`, storing each match's photo path, distance, and an optional `savedAt` gallery-save timestamp). `JobHistoryRepositoryImpl.saveJob()` is called from `FindFacesInPhotosUseCase` right after matching completes: it clears the previous job's row (cascading its photos), then **moves** — not copies — each matched photo out of `cacheDir` into a stable `filesDir/saved_matches/` directory before writing the DB rows, and returns that relocated list to the use case so the UI displays paths that will actually still exist tomorrow. `UploadViewModel` restores this on `init` via `GetLastJobUseCase`, so relaunching the app lands straight back on the last result set. This is intentionally single-job for now — the schema (jobs → matched_photos, foreign-keyed) already supports multiple job rows; only the "last job wins" repository logic would need to change to support a job history list (see Still open, below).
+
+**Why the DB doesn't duplicate the download.** A fair question this raised: since matched photos are already saved locally (for persistence) before the user ever taps "download," doesn't "save to gallery" just create a second copy? Yes, deliberately — they're for different things. The `filesDir/saved_matches/` copy is the app's own working copy (what the grid displays, what survives restart); the gallery copy is a MediaStore entry the user's Photos app and other apps can see, which Android has no API to alias back to an arbitrary app-private file. `markSavedToGallery()` just stamps `savedAt` on the existing row afterward — no new DB rows, no duplicate tracking, just a flag on what's already there.
+
+**Gallery save — two code paths for two storage models.** `PhotoGalleryRepository.saveToGallery()` (data: `MediaStoreGalleryRepositoryImpl`) branches on API level: 29+ inserts via `MediaStore` with `RELATIVE_PATH`/`IS_PENDING` and needs no permission at all (scoped storage); below 29 it writes directly into the public `Pictures/` directory and calls `MediaScannerConnection.scanFile()` so the new file actually shows up in gallery apps, gated behind the `WRITE_EXTERNAL_STORAGE` permission (declared `maxSdkVersion="28"` in the manifest — simply not requested at all on newer OS versions). `SaveMatchedPhotoUseCase` wraps one save + the `markSavedToGallery()` DB update as a single `Result`.
+
+**`ResultsScreen` — its own `ResultsViewModel`, not shared state.** Originally `ResultsScreen` had no ViewModel of its own and just read `UploadViewModel`'s `Success` state — fine for a static grid, wrong once the screen needed its own state (selection set, save status per photo, batch progress) that has nothing to do with the upload flow. `ResultsViewModel` now owns all of that independently, loading the same last job via `GetLastJobUseCase`. The one piece of cross-screen coordination left — resetting `UploadViewModel` back to `Idle` when the user navigates back from Results, so its `Success`-triggered navigation effect doesn't immediately fire again — lives in `MainActivity`'s nav graph, not inside either screen, since neither screen should need to know the other's ViewModel exists.
+
+`ResultsUiState.Loaded` carries `matches`, `selectionMode`, `selectedPhotos: Set<File>`, and an optional `batchProgress` (completed/total, drives a `LinearProgressIndicator` during multi-photo saves). Long-press enters selection mode; tap toggles a selection when already in that mode, or opens the full-screen viewer otherwise (`combinedClickable`). Selected photos can be removed from the results set (`RemoveMatchedPhotosUseCase` — deletes the `filesDir` copy and DB row; this curates what's in the app, it does not touch anything already saved to the gallery) or downloaded as a batch.
+
+**Save feedback — snackbar now, notification for later.** A batch save (`saveSelected()`/`saveAll()`) reports progress live via `batchProgress` and, on completion, emits a one-shot `ResultsEvent.BatchSaveCompleted` through a `MutableSharedFlow` (deliberately separate from the `StateFlow` UI state, which would otherwise re-fire the snackbar/notification on every recomposition or config change). `ResultsScreen` collects that event once to show a `Snackbar` and call `DownloadNotificationHelper.showCompleted()`, which posts a real system notification (channel created once in `SnapFindApplication.onCreate()`) whose tap action (`PendingIntent` + `ACTION_VIEW` on the last saved photo's `Uri`) opens the system Gallery/Photos app directly to that image — chosen over building a custom in-app gallery viewer, since the OS one already does that job well. `POST_NOTIFICATIONS` (API 33+ only) is requested alongside the storage permission dance, best-effort — a denial only means no notification, the snackbar still shows.
+
+**Full-screen viewer — `HorizontalPager`, no new dependency.** `PhotoViewerScreen` (`presentation/screens/viewer/`) uses Compose Foundation's `HorizontalPager` (already available via the existing Compose BOM) to swipe between every match in the current job, starting at whichever index was tapped in the grid. It has its own tiny `PhotoViewerViewModel` — independent of `ResultsViewModel`, loading the same job via the same `GetLastJobUseCase` — since the viewer needs none of Results' selection/save state.
 
 ## The dormant server path (kept, not deleted)
 
@@ -197,7 +216,7 @@ sealed interface UploadUiState {
 
 **`UploadScreen.kt`** — Same two-button-plus-submit flow; the "Processing" copy now reads "Finding matches on your device..." instead of "Uploading...".
 
-**`ResultsScreen.kt`** — Displays matched photos in a 2-column grid via Coil's `AsyncImage` — now given a local `File` (`match.photo`) instead of a network URL. Coil supports `File` as a model source natively, no extra configuration needed.
+**`ResultsScreen.kt`** — Displays matched photos in a 2-column grid via Coil's `AsyncImage` — now given a local `File` (`match.photo`) instead of a network URL. Coil supports `File` as a model source natively, no extra configuration needed. Owns its own `ResultsViewModel` (selection mode, per-photo save status, batch save progress) — see [Results persistence, gallery save, and the full-screen viewer](#results-persistence-gallery-save-and-the-full-screen-viewer) above. Tapping a photo (outside selection mode) opens `PhotoViewerScreen`, a full-screen swipeable viewer.
 
 ---
 
@@ -251,26 +270,37 @@ SnapFindAI/                             # this Gradle project
 │   │   ├── NetworkModule.kt          # Retrofit/SnapFindApi/base URL (dormant path)
 │   │   └── RepositoryModule.kt       # Binds JobRepositoryImpl (dormant path)
 │   ├── data/
+│   │   ├── local/                    # Room: SnapFindDatabase, JobEntity, MatchedPhotoEntity, JobDao
 │   │   ├── remote/
 │   │   │   └── SnapFindApi.kt        # Retrofit interface (dormant path)
 │   │   └── repository/
 │   │       ├── OnDeviceFaceMatchRepositoryImpl.kt  # Wraps facesdk's FaceMatchEngine (ACTIVE)
+│   │       ├── JobHistoryRepositoryImpl.kt         # Room-backed last-job persistence (ACTIVE)
+│   │       ├── MediaStoreGalleryRepositoryImpl.kt  # Save a match to the system gallery (ACTIVE)
 │   │       └── JobRepositoryImpl.kt  # One method per API call (dormant path)
 │   ├── domain/
 │   │   ├── model/
-│   │   │   └── FaceMatchResult.kt    # Plain domain type: File + distance (ACTIVE)
+│   │   │   ├── FaceMatchResult.kt    # Plain domain type: File + distance + optional savedAt (ACTIVE)
+│   │   │   └── SavedJob.kt           # timestamp + matches, what GetLastJobUseCase returns (ACTIVE)
 │   │   ├── repository/
-│   │   │   ├── FaceMatchRepository.kt  # The active contract
-│   │   │   └── JobRepository.kt        # The dormant contract
+│   │   │   ├── FaceMatchRepository.kt    # The active matching contract
+│   │   │   ├── JobHistoryRepository.kt   # saveJob/getLastJob/markSavedToGallery/removeMatches (ACTIVE)
+│   │   │   ├── PhotoGalleryRepository.kt # saveToGallery(photo): Uri? (ACTIVE)
+│   │   │   └── JobRepository.kt          # The dormant contract
 │   │   └── usecase/
-│   │       └── FindFacesInPhotosUseCase.kt  # unzip -> match -> cleanup, on-device
+│   │       ├── FindFacesInPhotosUseCase.kt   # unzip -> match -> persist -> cleanup, on-device
+│   │       ├── GetLastJobUseCase.kt          # restores the last saved job on app relaunch
+│   │       ├── SaveMatchedPhotoUseCase.kt    # save to gallery + mark saved, as one Result
+│   │       └── RemoveMatchedPhotosUseCase.kt # curate results before downloading (not gallery delete)
 │   ├── presentation/
 │   │   └── screens/
 │   │       ├── upload/     # UploadScreen.kt, UploadViewModel.kt, UploadUiState.kt
-│   │       └── results/    # ResultsScreen.kt — grid of FaceMatchResult
+│   │       ├── results/    # ResultsScreen.kt + ResultsViewModel.kt + ResultsUiState.kt
+│   │       └── viewer/     # PhotoViewerScreen.kt (HorizontalPager) + PhotoViewerViewModel.kt
 │   ├── ui/theme/                     # Material 3 color, typography, theme setup
 │   ├── utils/
-│   │   └── FileHelper.kt             # Uri->File, plus ZIP extraction
+│   │   ├── FileHelper.kt             # Uri->File, plus ZIP extraction
+│   │   └── DownloadNotificationHelper.kt  # posts the batch-save-completed system notification
 │   ├── spike/                        # facesdk validation harness — see facesdk/README below
 │   ├── MainActivity.kt               # Single activity, hosts Compose navigation
 │   └── SnapFindApplication.kt        # Hilt application entry point (@HiltAndroidApp)
@@ -327,6 +357,8 @@ The model weights (`det_500m.onnx`, `w600k_mbf.onnx`, ~16 MB total) live in `fac
 | **Clean Architecture** | Separation of concerns — each layer has one job |
 | **Retrofit + OkHttp** | Still present for the dormant server path; not used by the active flow |
 | **`java.net.URL` (plain, no library)** | `ModelDownloader`'s model fetch — deliberately no Retrofit/Ktor dependency, so facesdk doesn't force a networking stack on whatever a host app already uses |
+| **Room** | Last-completed-job persistence (`jobs`/`matched_photos` tables) — survives app restart; not used for file bytes, only metadata pointing at files in `filesDir` |
+| **MediaStore** | Saving a matched photo into the system gallery — scoped-storage insert on API 29+, legacy public-directory write + `WRITE_EXTERNAL_STORAGE` below that |
 | **Robolectric + JUnit** | facesdk's 38 unit tests — real Android graphics classes (Bitmap, Canvas, RectF) under test, not stubbed out |
 
 ---
@@ -341,10 +373,13 @@ The original MVP checklist (Compose UI, Retrofit integration, Hilt DI, Coil imag
 
 **Model distribution (2026-09-27): done.** Release builds no longer bundle the ~16MB of ONNX models at all — moved to a debug-only asset source set, fetched and cached on first use instead via a new `ModelDownloader`, checksum-verified, hosted as a GitHub Release asset. Confirmed on a real device: fresh install (uninstalled first, no cached models anywhere), ran the real upload flow with no shortcuts, downloaded both models on first use, same 4/4 expected matches as every prior run. See [Model distribution](#model-distribution-why-release-builds-download-instead-of-bundling) above.
 
+**Results persistence, gallery save, and full-screen viewer (2026-09-28): done.** Last-completed-job results now survive an app restart (Room, photos relocated to stable `filesDir`), matches can be saved individually or in bulk to the system gallery (MediaStore, correct dual-path handling for API 29+ vs older), the grid supports long-press multi-select with batch remove/download, a batch save reports progress live and confirms via snackbar + a real system notification that opens the saved photo in the system Gallery app on tap, and tapping any photo opens a full-screen swipeable viewer (`HorizontalPager`). Verified end-to-end on a real API 31 device: persistence across restart, selection/remove/download-all/download-selected, and the full-screen viewer all confirmed working; the storage-permission popup itself couldn't be exercised on that device (API 31 is already past the API <29 legacy-permission path). See [Results persistence, gallery save, and the full-screen viewer](#results-persistence-gallery-save-and-the-full-screen-viewer) above.
+
 **Still open:**
-- **No first-run download experience.** The model download currently happens silently inside the existing "Processing" step — no dedicated screen explaining ~16MB is about to download, no real progress bar shown (the download mechanism already supports progress reporting; it's just not wired to any UI yet). The next piece of work here.
-- **No local persistence.** Closing the app loses all match results — nothing survives a process restart. A prerequisite for an actual "download this photo" feature, not yet built.
-- **UI is intentionally bare-bones** — two buttons and a spinner, functionally correct, not redesigned.
+- **No first-run download experience.** The model download currently happens silently inside the existing "Processing" step — no dedicated screen explaining ~16MB is about to download, no real progress bar shown (the download mechanism already supports progress reporting; it's just not wired to any UI yet).
+- **Gallery-saved photos are duplicated, not aliased.** A saved match exists both as the app's internal `filesDir` copy (what the grid renders) and as a separate MediaStore copy. Real optimization, not urgent: once a photo is saved to the gallery, the grid could load it from its gallery `Uri` instead and drop the internal copy, avoiding the duplicate — deferred since it's a storage-efficiency concern, not a correctness one.
+- **Only the last job is persisted, not a history.** The Room schema (`jobs` → `matched_photos`, foreign-keyed) already supports multiple job rows; `JobHistoryRepositoryImpl` deliberately only keeps the latest one for now. Planned: show past jobs as grid cards on the main/upload screen, tap any card to reopen that job's results — flagged when the schema was designed, not yet built.
+- **UI is intentionally bare-bones** — functionally correct, not yet redesigned. User's stated goal: a genuinely polished modern app feel — splash screen, a real onboarding screen (using the model-download progress callback that already exists), general visual polish. Not started.
 - **Server-vs-on-device routing is an open question, not a decision.** `FaceMatchRepository` is shaped so a server-backed implementation could plug in later without touching the use case — but whether/when that's worth building is undecided. See [Cross-project status](../Face_recognition/DEEP_DIVE.md#cross-project-status) in the backend's docs.
 
 Cross-project status (this app + the backend) is tracked in one place to avoid two docs drifting out of sync: see "Cross-project status" in `../Face_recognition/README.md`.
