@@ -82,4 +82,7 @@ dependencies {
     implementation(libs.room.runtime)
     implementation(libs.room.ktx)
     ksp(libs.room.compiler)
+
+    // System splash screen while checking whether onboarding is needed
+    implementation(libs.androidx.core.splashscreen)
 }

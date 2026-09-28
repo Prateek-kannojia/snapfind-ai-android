@@ -34,6 +34,22 @@ object ModelDownloader {
     ): File = getOrDownload(url, File(context.filesDir, "facesdk_models"), fileName, sha256, onProgress)
 
     /**
+     * Checks whether a valid, checksum-verified copy is already cached --
+     * without downloading anything. Lets a caller decide up front whether a
+     * download is needed at all (e.g. to skip a first-run download screen
+     * on every launch after the first).
+     */
+    suspend fun isCached(context: Context, fileName: String, sha256: String): Boolean =
+        isCached(File(context.filesDir, "facesdk_models"), fileName, sha256)
+
+    /** Same as the [Context]-based overload, but takes the cache directory directly. */
+    suspend fun isCached(destDir: File, fileName: String, sha256: String): Boolean =
+        withContext(Dispatchers.IO) {
+            val dest = File(destDir, fileName)
+            dest.exists() && sha256Of(dest).equals(sha256, ignoreCase = true)
+        }
+
+    /**
      * Same as the [Context]-based overload, but takes the cache directory
      * directly -- what the app-facing API delegates to, and what tests call
      * against a temp directory without needing a real Android [Context].

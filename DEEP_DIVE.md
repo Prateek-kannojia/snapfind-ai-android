@@ -14,6 +14,7 @@ After large events (weddings, parties, conferences), photographers distribute ma
 
 ## What this app does (user flow)
 
+0. **First launch only:** a brief system splash, then an Onboarding screen explaining that the ~16MB face-matching models need a one-time download, with a real progress bar. Every launch after that skips straight past it.
 1. User opens the app and lands on the **Upload Screen**
 2. User picks a selfie from their gallery (the face to search for)
 3. User picks a ZIP file containing event photos
@@ -78,7 +79,21 @@ The two ONNX models are ~16MB combined. Bundling them in `facesdk/src/main/asset
 
 `OnDeviceFaceMatchRepositoryImpl` downloads both models on first use via `ModelDownloader`, then reuses the cached copy on every job after that — never re-downloading once a valid copy exists. Each download is verified against a known SHA-256 checksum before being trusted; a mismatch (corrupted transfer, interrupted download) is discarded, never cached, and reported as an error rather than silently handing a broken model to the detector. Models are hosted as a GitHub Release asset on this repo (tag `models-v1`) — free, versioned, no backend dependency for the on-device flow to work.
 
-**Known UX gap, not yet fixed:** the download currently happens silently inside the existing "Processing" step the first time a user submits a job — there's no dedicated screen explaining that ~16MB is about to download, and no real progress bar shown (`ModelDownloader` already supports an `onProgress` callback; it's just not wired up to any UI yet). A proper first-run setup screen is the next piece of work here, not a redesign of the download mechanism itself.
+This download is no longer silent — see [First-run onboarding and the splash screen](#first-run-onboarding-and-the-splash-screen) below for the dedicated screen that now handles it, before the user ever reaches Upload.
+
+## First-run onboarding and the splash screen
+
+Downloading ~16MB used to happen silently inside the existing "Processing" step the first time a user submitted a job — no explanation, no progress bar, easy to mistake for the app hanging. Fixed by moving the download earlier, into a dedicated first-run flow, and by adding a real system splash screen so the app never shows a blank frame while deciding which screen to open first.
+
+**Deciding Onboarding vs. Upload happens before any UI is drawn.** `AppStartupViewModel` (`presentation/`) checks, once, whether both models are already cached via a new `ModelProvisioningRepository.areModelsReady()`. `MainActivity` installs the system splash screen (`androidx.core.splashscreen`, via `installSplashScreen()`) and keeps it on screen (`setKeepOnScreenCondition`) until that check finishes — so the very first frame the user sees is already the right one: straight to Upload if models are cached, Onboarding if not. No flash of the wrong screen, no blank frame while checking.
+
+**`ModelProvisioningRepository`** is a small, separate domain contract — `areModelsReady(): Boolean` and `downloadModels(onProgress: (Float) -> Unit)` — deliberately not folded into `FaceMatchRepository`, since checking/fetching model files and actually running a match are different concerns. Its impl (`ModelProvisioningRepositoryImpl`) is a thin wrapper around `ModelDownloader`, the same SDK utility `OnDeviceFaceMatchRepositoryImpl` already used — `ModelDownloader` gained one new capability for this, `isCached()`, which answers "is a valid, checksum-verified copy already here?" without downloading anything (mirrors the existing `getOrDownload()`'s `Context` / `destDir` overload split). `downloadModels()` reports combined progress across both model files as a single 0f..1f value, weighting each file's own byte-progress by its position (file 1 of 2, file 2 of 2) rather than needing exact combined byte totals up front.
+
+**Both repository impls now read the same URL/checksum config**, `data/ModelConfig.kt` — pulled out of `OnDeviceFaceMatchRepositoryImpl` (where these constants originally lived) into its own file so the two repositories can never drift to different URLs or checksums for the same models.
+
+**`OnboardingScreen`** (`presentation/screens/onboarding/`) shows the explanation + a "Get Started" button, then a `LinearProgressIndicator` bound to `OnboardingViewModel`'s download progress, then navigates to Upload on completion via a one-shot state (`OnboardingUiState.Complete`) rather than a `StateFlow` value that could re-fire navigation on recomposition. A download failure shows the error with a "Retry" button rather than leaving the user stuck.
+
+**Why `OnDeviceFaceMatchRepositoryImpl` still calls `ModelDownloader.getOrDownload()` itself, not just relying on Onboarding having already run it:** it's a safety net, not redundant work in the common case — `getOrDownload()` is a no-op cache hit once Onboarding has already fetched both files, but this keeps the matching path correct even if app storage were cleared without a fresh install (Onboarding wouldn't re-run, since that only happens once per install in the current flow).
 
 ## Results persistence, gallery save, and the full-screen viewer
 
@@ -273,27 +288,34 @@ SnapFindAI/                             # this Gradle project
 │   │   ├── local/                    # Room: SnapFindDatabase, JobEntity, MatchedPhotoEntity, JobDao
 │   │   ├── remote/
 │   │   │   └── SnapFindApi.kt        # Retrofit interface (dormant path)
+│   │   ├── ModelConfig.kt            # model URLs + checksums, shared by both repos below (ACTIVE)
 │   │   └── repository/
-│   │       ├── OnDeviceFaceMatchRepositoryImpl.kt  # Wraps facesdk's FaceMatchEngine (ACTIVE)
-│   │       ├── JobHistoryRepositoryImpl.kt         # Room-backed last-job persistence (ACTIVE)
-│   │       ├── MediaStoreGalleryRepositoryImpl.kt  # Save a match to the system gallery (ACTIVE)
+│   │       ├── OnDeviceFaceMatchRepositoryImpl.kt   # Wraps facesdk's FaceMatchEngine (ACTIVE)
+│   │       ├── ModelProvisioningRepositoryImpl.kt   # checks/downloads models for onboarding (ACTIVE)
+│   │       ├── JobHistoryRepositoryImpl.kt          # Room-backed last-job persistence (ACTIVE)
+│   │       ├── MediaStoreGalleryRepositoryImpl.kt   # Save a match to the system gallery (ACTIVE)
 │   │       └── JobRepositoryImpl.kt  # One method per API call (dormant path)
 │   ├── domain/
 │   │   ├── model/
 │   │   │   ├── FaceMatchResult.kt    # Plain domain type: File + distance + optional savedAt (ACTIVE)
 │   │   │   └── SavedJob.kt           # timestamp + matches, what GetLastJobUseCase returns (ACTIVE)
 │   │   ├── repository/
-│   │   │   ├── FaceMatchRepository.kt    # The active matching contract
-│   │   │   ├── JobHistoryRepository.kt   # saveJob/getLastJob/markSavedToGallery/removeMatches (ACTIVE)
-│   │   │   ├── PhotoGalleryRepository.kt # saveToGallery(photo): Uri? (ACTIVE)
-│   │   │   └── JobRepository.kt          # The dormant contract
+│   │   │   ├── FaceMatchRepository.kt         # The active matching contract
+│   │   │   ├── ModelProvisioningRepository.kt # areModelsReady/downloadModels (ACTIVE)
+│   │   │   ├── JobHistoryRepository.kt        # saveJob/getLastJob/markSavedToGallery/removeMatches (ACTIVE)
+│   │   │   ├── PhotoGalleryRepository.kt      # saveToGallery(photo): Uri? (ACTIVE)
+│   │   │   └── JobRepository.kt               # The dormant contract
 │   │   └── usecase/
 │   │       ├── FindFacesInPhotosUseCase.kt   # unzip -> match -> persist -> cleanup, on-device
+│   │       ├── CheckModelsReadyUseCase.kt    # backs AppStartupViewModel's splash-gating check
+│   │       ├── DownloadModelsUseCase.kt      # backs OnboardingViewModel's download + progress
 │   │       ├── GetLastJobUseCase.kt          # restores the last saved job on app relaunch
 │   │       ├── SaveMatchedPhotoUseCase.kt    # save to gallery + mark saved, as one Result
 │   │       └── RemoveMatchedPhotosUseCase.kt # curate results before downloading (not gallery delete)
 │   ├── presentation/
+│   │   ├── AppStartupViewModel.kt    # decides Onboarding vs. Upload before the splash dismisses
 │   │   └── screens/
+│   │       ├── onboarding/ # OnboardingScreen.kt + OnboardingViewModel.kt + OnboardingUiState.kt
 │   │       ├── upload/     # UploadScreen.kt, UploadViewModel.kt, UploadUiState.kt
 │   │       ├── results/    # ResultsScreen.kt + ResultsViewModel.kt + ResultsUiState.kt
 │   │       └── viewer/     # PhotoViewerScreen.kt (HorizontalPager) + PhotoViewerViewModel.kt
@@ -328,7 +350,7 @@ SnapFindAI/                             # this Gradle project
 - JDK 17 (AGP 8.11.2 requires it — Android Studio bundles its own JBR if your `JAVA_HOME` is older)
 - Physical Android device or emulator (API 24+)
 - **No backend needed** — face matching runs entirely on-device now. The backend is only relevant if you're reviving the dormant server path.
-- **Internet needed on first launch, release builds only.** Debug builds bundle the models and work offline immediately; release builds download them once (~16 MB) and cache them — see [Model distribution](#model-distribution-why-release-builds-download-instead-of-bundling).
+- **Internet needed on first launch, release builds only.** Debug builds bundle the models and work offline immediately; release builds show an Onboarding screen that downloads them once (~16 MB) and caches them — see [First-run onboarding and the splash screen](#first-run-onboarding-and-the-splash-screen).
 
 ### Steps
 
@@ -359,6 +381,7 @@ The model weights (`det_500m.onnx`, `w600k_mbf.onnx`, ~16 MB total) live in `fac
 | **`java.net.URL` (plain, no library)** | `ModelDownloader`'s model fetch — deliberately no Retrofit/Ktor dependency, so facesdk doesn't force a networking stack on whatever a host app already uses |
 | **Room** | Last-completed-job persistence (`jobs`/`matched_photos` tables) — survives app restart; not used for file bytes, only metadata pointing at files in `filesDir` |
 | **MediaStore** | Saving a matched photo into the system gallery — scoped-storage insert on API 29+, legacy public-directory write + `WRITE_EXTERNAL_STORAGE` below that |
+| **`androidx.core:core-splashscreen`** | System splash screen kept on screen until `AppStartupViewModel` knows whether Onboarding is needed — avoids a blank frame or a wrong-screen flash |
 | **Robolectric + JUnit** | facesdk's 38 unit tests — real Android graphics classes (Bitmap, Canvas, RectF) under test, not stubbed out |
 
 ---
@@ -375,11 +398,12 @@ The original MVP checklist (Compose UI, Retrofit integration, Hilt DI, Coil imag
 
 **Results persistence, gallery save, and full-screen viewer (2026-09-28): done.** Last-completed-job results now survive an app restart (Room, photos relocated to stable `filesDir`), matches can be saved individually or in bulk to the system gallery (MediaStore, correct dual-path handling for API 29+ vs older), the grid supports long-press multi-select with batch remove/download, a batch save reports progress live and confirms via snackbar + a real system notification that opens the saved photo in the system Gallery app on tap, and tapping any photo opens a full-screen swipeable viewer (`HorizontalPager`). Verified end-to-end on a real API 31 device: persistence across restart, selection/remove/download-all/download-selected, and the full-screen viewer all confirmed working; the storage-permission popup itself couldn't be exercised on that device (API 31 is already past the API <29 legacy-permission path). See [Results persistence, gallery save, and the full-screen viewer](#results-persistence-gallery-save-and-the-full-screen-viewer) above.
 
+**First-run onboarding and splash screen (2026-09-28): done.** The ~16MB model download is no longer silent: a real system splash screen (`androidx.core.splashscreen`) covers the app until a one-time check knows whether the models are already cached, then opens straight to Upload if so, or an Onboarding screen (explanation + "Get Started" + a live progress bar wired to `ModelDownloader`'s existing `onProgress` callback) if not. Verified on a real device with a genuinely fresh install (app uninstalled first, not just app data cleared, since `pm clear` was denied by adb on that device): splash showed briefly, Onboarding appeared with a working progress bar, and it landed on Upload afterward. See [First-run onboarding and the splash screen](#first-run-onboarding-and-the-splash-screen) above.
+
 **Still open:**
-- **No first-run download experience.** The model download currently happens silently inside the existing "Processing" step — no dedicated screen explaining ~16MB is about to download, no real progress bar shown (the download mechanism already supports progress reporting; it's just not wired to any UI yet).
 - **Gallery-saved photos are duplicated, not aliased.** A saved match exists both as the app's internal `filesDir` copy (what the grid renders) and as a separate MediaStore copy. Real optimization, not urgent: once a photo is saved to the gallery, the grid could load it from its gallery `Uri` instead and drop the internal copy, avoiding the duplicate — deferred since it's a storage-efficiency concern, not a correctness one.
-- **Only the last job is persisted, not a history.** The Room schema (`jobs` → `matched_photos`, foreign-keyed) already supports multiple job rows; `JobHistoryRepositoryImpl` deliberately only keeps the latest one for now. Planned: show past jobs as grid cards on the main/upload screen, tap any card to reopen that job's results — flagged when the schema was designed, not yet built.
-- **UI is intentionally bare-bones** — functionally correct, not yet redesigned. User's stated goal: a genuinely polished modern app feel — splash screen, a real onboarding screen (using the model-download progress callback that already exists), general visual polish. Not started.
+- **Only the last job is persisted, not a history.** The Room schema (`jobs` → `matched_photos`, foreign-keyed) already supports multiple job rows; `JobHistoryRepositoryImpl` deliberately only keeps the latest one for now. Planned: show past jobs as grid cards on the main/upload screen, tap any card to reopen that job's results — flagged when the schema was designed, not yet built. **In progress next.**
+- **UI polish beyond splash/onboarding is still bare-bones** — functionally correct, not yet redesigned. User's stated goal: a genuinely polished modern app feel. Splash + onboarding are done; general visual polish elsewhere is not started.
 - **Server-vs-on-device routing is an open question, not a decision.** `FaceMatchRepository` is shaped so a server-backed implementation could plug in later without touching the use case — but whether/when that's worth building is undecided. See [Cross-project status](../Face_recognition/DEEP_DIVE.md#cross-project-status) in the backend's docs.
 
 Cross-project status (this app + the backend) is tracked in one place to avoid two docs drifting out of sync: see "Cross-project status" in `../Face_recognition/README.md`.

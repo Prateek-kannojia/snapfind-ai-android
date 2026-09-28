@@ -2,4 +2,14 @@
 <resources>
 
     <style name="Theme.SnapFindAI" parent="android:Theme.Material.Light.NoActionBar" />
+
+    <!-- Shown by the system while AppStartupViewModel decides Onboarding vs.
+         Upload: see MainActivity's installSplashScreen() call. Switches to
+         Theme.SnapFindAI automatically once the splash screen is
+         dismissed, via postSplashScreenTheme. -->
+    <style name="Theme.SnapFindAI.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/white</item>
+        <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
+        <item name="postSplashScreenTheme">@style/Theme.SnapFindAI</item>
+    </style>
 </resources>

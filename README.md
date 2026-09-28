@@ -10,6 +10,7 @@ Backend lives in [`../Face_recognition/`](../Face_recognition/) — no longer ca
 
 ## User flow
 
+0. First launch only: a splash screen, then Onboarding downloads the ~16MB face-matching models with a real progress bar (skipped on every launch after)
 1. Pick a selfie + a ZIP of event photos
 2. Tap "Find My Photos" — unzips locally, matches on-device
 3. Results screen shows every matched photo in a grid — tap one for a full-screen swipeable view, long-press to select multiple and remove or download them, or download all straight to the system gallery
@@ -31,12 +32,12 @@ The use case (`FindFacesInPhotosUseCase`) owns the actual sequence: unzip → ma
 
 ## Tech stack
 
-Kotlin · Jetpack Compose · Hilt (DI) · ONNX Runtime (on-device inference) · Coroutines + StateFlow · Coil (image loading) · Room (last-job persistence) · MediaStore (gallery save) · Clean Architecture · Retrofit (dormant server path, kept not deleted)
+Kotlin · Jetpack Compose · Hilt (DI) · ONNX Runtime (on-device inference) · Coroutines + StateFlow · Coil (image loading) · Room (last-job persistence) · MediaStore (gallery save) · core-splashscreen (first-run splash) · Clean Architecture · Retrofit (dormant server path, kept not deleted)
 
 ## Run it
 
 1. Open in Android Studio, let Gradle sync (pulls in `:app` and `:facesdk`)
-2. Run the app — no backend required for face matching. Debug builds bundle the models and work offline immediately; release builds download them once (~16MB) on first use instead, to keep the shipped APK small — see DEEP_DIVE.md.
+2. Run the app — no backend required for face matching. Debug builds bundle the models and work offline immediately; release builds show a one-time Onboarding screen that downloads them (~16MB) with a real progress bar, to keep the shipped APK small — see DEEP_DIVE.md.
 
 ## Project structure
 
@@ -45,7 +46,7 @@ app/src/main/java/com/example/snapfindai/
 ├── di/            # Hilt modules
 ├── data/          # repository implementations (active: on-device, Room, MediaStore; dormant: Retrofit)
 ├── domain/        # repository interfaces, domain models, use cases
-├── presentation/  # Compose screens + ViewModels (upload, results, full-screen viewer)
+├── presentation/  # Compose screens + ViewModels (onboarding, upload, results, full-screen viewer)
 └── utils/
 
 facesdk/           # standalone on-device face-matching SDK, sibling module

@@ -2,6 +2,7 @@ package com.example.snapfindai.data.repository
 
 import android.content.Context
 import android.graphics.Bitmap
+import com.example.snapfindai.data.ModelConfig
 import com.example.snapfindai.domain.model.FaceMatchResult
 import com.example.snapfindai.domain.repository.FaceMatchRepository
 import com.example.snapfindai.facesdk.BitmapDecoder
@@ -33,21 +34,14 @@ class OnDeviceFaceMatchRepositoryImpl @Inject constructor(
     private val engineMutex = Mutex()
     @Volatile private var engine: FaceMatchEngine? = null
 
-    private companion object {
-        // Debug builds bundle these as facesdk/src/debug/assets/models/ for
-        // fast local iteration; release builds have no bundled models at
-        // all (so the APK isn't ~16MB heavier for every install) and fetch
-        // them here instead, on first use, caching them after. Hosted as a
-        // GitHub Release asset -- same repo, versioned, free, no backend
-        // needed for the app's on-device flow to work.
-        private const val MODEL_RELEASE_BASE =
-            "https://github.com/Prateek-kannojia/snapfind-ai-android/releases/download/models-v1"
-        private const val DETECTOR_MODEL_URL = "$MODEL_RELEASE_BASE/det_500m.onnx"
-        private const val EMBEDDER_MODEL_URL = "$MODEL_RELEASE_BASE/w600k_mbf.onnx"
-        private const val DETECTOR_MODEL_SHA256 = "5e4447f50245bbd7966bd6c0fa52938c61474a04ec7def48753668a9d8b4ea3a"
-        private const val EMBEDDER_MODEL_SHA256 = "9cc6e4a75f0e2bf0b1aed94578f144d15175f357bdc05e815e5c4a02b319eb4f"
-    }
-
+    // Debug builds bundle the models as facesdk/src/debug/assets/models/ for
+    // fast local iteration; release builds have no bundled models at all
+    // (so the APK isn't ~16MB heavier for every install). Normally the
+    // onboarding flow (see ModelProvisioningRepositoryImpl) has already
+    // downloaded and cached both files before this is ever called -- this
+    // is just a safety net for that not being true (e.g. cleared app
+    // storage), so getOrDownload() below is a no-op cache hit in the
+    // common case, not a real download.
     private suspend fun engine(): FaceMatchEngine =
         engine ?: engineMutex.withLock {
             engine ?: buildEngine().also { engine = it }
@@ -55,10 +49,10 @@ class OnDeviceFaceMatchRepositoryImpl @Inject constructor(
 
     private suspend fun buildEngine(): FaceMatchEngine {
         val detectorFile = ModelDownloader.getOrDownload(
-            context, DETECTOR_MODEL_URL, "det_500m.onnx", DETECTOR_MODEL_SHA256,
+            context, ModelConfig.DETECTOR_MODEL_URL, ModelConfig.DETECTOR_MODEL_FILE_NAME, ModelConfig.DETECTOR_MODEL_SHA256,
         )
         val embedderFile = ModelDownloader.getOrDownload(
-            context, EMBEDDER_MODEL_URL, "w600k_mbf.onnx", EMBEDDER_MODEL_SHA256,
+            context, ModelConfig.EMBEDDER_MODEL_URL, ModelConfig.EMBEDDER_MODEL_FILE_NAME, ModelConfig.EMBEDDER_MODEL_SHA256,
         )
         val detector = FaceDetector.createFromFile(detectorFile)
         val embedder = FaceEmbedder.createFromFile(embedderFile)
