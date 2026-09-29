@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Matches ui/theme/Color.kt's ClayBackgroundDark: picked up automatically
+         in dark mode since this overrides values/colors.xml's clay_background. -->
+    <color name="clay_background">#FF211E18</color>
+</resources>

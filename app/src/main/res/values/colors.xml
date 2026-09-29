@@ -7,4 +7,9 @@
     <color name="teal_700">#FF018786</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
+
+    <!-- Soft Clay's own background: matches ui/theme/Color.kt's ClayBackgroundLight.
+         Used for the splash screen, which renders before Compose (and its
+         MaterialTheme colors) exist at all. -->
+    <color name="clay_background">#FFEAE7E1</color>
 </resources>

@@ -8,7 +8,7 @@
          Theme.SnapFindAI automatically once the splash screen is
          dismissed, via postSplashScreenTheme. -->
     <style name="Theme.SnapFindAI.Starting" parent="Theme.SplashScreen">
-        <item name="windowSplashScreenBackground">@color/white</item>
+        <item name="windowSplashScreenBackground">@color/clay_background</item>
         <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
         <item name="postSplashScreenTheme">@style/Theme.SnapFindAI</item>
     </style>

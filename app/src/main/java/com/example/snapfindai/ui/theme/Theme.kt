@@ -1,58 +1,61 @@
 package com.example.snapfindai.ui.theme
 
-import android.app.Activity
-import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.platform.LocalContext
 
-private val DarkColorScheme = darkColorScheme(
-    primary = Purple80,
-    secondary = PurpleGrey80,
-    tertiary = Pink80
+private val ClayLightColorScheme = lightColorScheme(
+    primary = ClayAccentLight,
+    onPrimary = ClayAccentInkLight,
+    tertiary = ClayTertiaryLight,
+    onTertiary = ClayTertiaryInkLight,
+    background = ClayBackgroundLight,
+    onBackground = ClayInkLight,
+    surface = ClaySurfaceLight,
+    onSurface = ClayInkLight,
+    surfaceVariant = ClaySurfaceVariantLight,
+    onSurfaceVariant = ClayInkSoftLight,
+    outline = ClayOutlineLight,
+    error = ClayErrorLight,
+    onError = ClayAccentInkLight,
 )
 
-private val LightColorScheme = lightColorScheme(
-    primary = Purple40,
-    secondary = PurpleGrey40,
-    tertiary = Pink40
-
-    /* Other default colors to override
-    background = Color(0xFFFFFBFE),
-    surface = Color(0xFFFFFBFE),
-    onPrimary = Color.White,
-    onSecondary = Color.White,
-    onTertiary = Color.White,
-    onBackground = Color(0xFF1C1B1F),
-    onSurface = Color(0xFF1C1B1F),
-    */
+private val ClayDarkColorScheme = darkColorScheme(
+    primary = ClayAccentDark,
+    onPrimary = ClayAccentInkDark,
+    tertiary = ClayTertiaryDark,
+    onTertiary = ClayTertiaryInkDark,
+    background = ClayBackgroundDark,
+    onBackground = ClayInkDark,
+    surface = ClaySurfaceDark,
+    onSurface = ClayInkDark,
+    surfaceVariant = ClaySurfaceVariantDark,
+    onSurfaceVariant = ClayInkSoftDark,
+    outline = ClayOutlineDark,
+    error = ClayErrorDark,
+    onError = ClayAccentInkDark,
 )
 
+/**
+ * Clay Wave -- the app's one committed identity, light and dark variants
+ * both designed for it specifically (see Color.kt). Deliberately no
+ * Material You / dynamic-color branch: the palette is the app's identity
+ * regardless of the user's wallpaper, not a fallback for when one isn't
+ * available.
+ */
 @Composable
 fun SnapFindAITheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    // Dynamic color is available on Android 12+
-    dynamicColor: Boolean = true,
     content: @Composable () -> Unit
 ) {
-    val colorScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            val context = LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        }
-
-        darkTheme -> DarkColorScheme
-        else -> LightColorScheme
-    }
+    val colorScheme = if (darkTheme) ClayDarkColorScheme else ClayLightColorScheme
 
     MaterialTheme(
         colorScheme = colorScheme,
         typography = Typography,
+        shapes = ClayShapes,
         content = content
     )
 }
