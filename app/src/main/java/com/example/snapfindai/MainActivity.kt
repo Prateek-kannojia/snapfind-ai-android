@@ -1,5 +1,6 @@
 package com.example.snapfindai
 
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -14,6 +15,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -62,30 +64,59 @@ class MainActivity : ComponentActivity() {
                         composable("upload") {
                             UploadScreen(
                                 viewModel = uploadViewModel,
-                                onNavigateToResults = { navController.navigate("results") }
-                            )
-                        }
-                        composable("results") {
-                            // ResultsScreen owns its own ViewModel (loads the
-                            // last job itself) -- but going "back" still needs
-                            // to reset uploadViewModel's state, or its
-                            // Success-triggered LaunchedEffect would immediately
-                            // navigate forward again. That coordination belongs
-                            // here, not inside either screen.
-                            ResultsScreen(
-                                onNavigateBack = {
-                                    uploadViewModel.resetState()
-                                    navController.popBackStack()
-                                },
-                                onPhotoClick = { index -> navController.navigate("photo_viewer/$index") },
+                                onNavigateToResults = { navController.navigate("results") },
+                                // Opening a past job from the history grid --
+                                // separate from onNavigateToResults, which is
+                                // only for the job just finished (no id: the
+                                // newest one already is that job).
+                                onOpenJob = { jobId -> navController.navigate("results?jobId=$jobId") },
                             )
                         }
                         composable(
-                            "photo_viewer/{startIndex}",
-                            arguments = listOf(navArgument("startIndex") { type = NavType.IntType }),
+                            "results?jobId={jobId}",
+                            arguments = listOf(navArgument("jobId") { type = NavType.LongType; defaultValue = -1L }),
+                        ) {
+                            // ResultsScreen owns its own ViewModel -- loads
+                            // the jobId nav arg's job if present (opened from
+                            // history), otherwise the last completed one
+                            // (the just-finished-a-job flow).
+                            //
+                            // Refreshing uploadViewModel on the way out (so
+                            // its job-history grid picks up anything changed
+                            // in Results, e.g. removed photos) has to run no
+                            // matter HOW the user leaves this screen -- the
+                            // in-app back button, the system back gesture, or
+                            // the hardware back key all end up popping the
+                            // stack, but only disposal is guaranteed to fire
+                            // for all three. A callback wired to just the
+                            // back button's onClick would miss the other two.
+                            DisposableEffect(Unit) {
+                                onDispose { uploadViewModel.resetState() }
+                            }
+                            ResultsScreen(
+                                onNavigateBack = { navController.popBackStack() },
+                                // The photo's own path, not its position in the
+                                // grid: the viewer loads the job itself, so a
+                                // position would only land on the right photo
+                                // as long as both lists happened to be built
+                                // identically. Identity survives that.
+                                onPhotoClick = { jobId, photoPath ->
+                                    navController.navigate("photo_viewer/$jobId?photo=${Uri.encode(photoPath)}")
+                                },
+                            )
+                        }
+                        composable(
+                            "photo_viewer/{jobId}?photo={photo}",
+                            arguments = listOf(
+                                navArgument("jobId") { type = NavType.LongType },
+                                // A query arg, not a path segment: an absolute
+                                // file path contains the '/' that path segments
+                                // are split on.
+                                navArgument("photo") { type = NavType.StringType; nullable = true; defaultValue = null },
+                            ),
                         ) { backStackEntry ->
                             PhotoViewerScreen(
-                                startIndex = backStackEntry.arguments?.getInt("startIndex") ?: 0,
+                                startPhotoPath = backStackEntry.arguments?.getString("photo"),
                                 onNavigateBack = { navController.popBackStack() },
                             )
                         }
