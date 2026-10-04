@@ -24,6 +24,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.example.snapfindai.domain.model.JobSummary
 import com.example.snapfindai.presentation.components.SnapFindButton
+import com.example.snapfindai.presentation.components.SnapFindButtonSlot
 import com.example.snapfindai.presentation.components.SnapFindButtonVariant
 import com.example.snapfindai.presentation.components.SnapFindPhotoCard
 import com.example.snapfindai.presentation.components.WavyProgressRing
@@ -73,6 +74,7 @@ fun UploadScreen(
                 viewModel.submitJob(context, selfieUri!!, zipUri!!)
             }
         },
+        onCancel = { viewModel.cancelJob() },
         onOpenJob = onOpenJob,
     )
 }
@@ -86,12 +88,17 @@ private fun UploadContent(
     onChooseSelfie: () -> Unit,
     onChooseZip: () -> Unit,
     onSubmit: () -> Unit,
+    onCancel: () -> Unit,
     onOpenJob: (Long) -> Unit,
 ) {
     Scaffold(containerColor = MaterialTheme.colorScheme.background) { paddingValues ->
         val processingState = uiState as? UploadUiState.Processing
         if (processingState != null) {
-            MatchingProgress(modifier = Modifier.padding(paddingValues), state = processingState)
+            MatchingProgress(
+                modifier = Modifier.padding(paddingValues),
+                state = processingState,
+                onCancel = onCancel,
+            )
             return@Scaffold
         }
 
@@ -184,7 +191,11 @@ private fun JobHistoryGrid(jobs: List<JobSummary>, onOpenJob: (Long) -> Unit) {
  * then, never a fabricated count.
  */
 @Composable
-private fun MatchingProgress(modifier: Modifier = Modifier, state: UploadUiState.Processing) {
+private fun MatchingProgress(
+    modifier: Modifier = Modifier,
+    state: UploadUiState.Processing,
+    onCancel: () -> Unit,
+) {
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -224,6 +235,18 @@ private fun MatchingProgress(modifier: Modifier = Modifier, state: UploadUiState
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = SnapFindSpacing.md),
+            )
+        }
+
+        // A real event folder takes minutes, so this screen can't be a
+        // one-way door. Tonal rather than primary: stopping is the secondary
+        // action here, the job itself is the point.
+        SnapFindButtonSlot(modifier = Modifier.padding(top = SnapFindSpacing.xl)) {
+            SnapFindButton(
+                text = "Cancel",
+                onClick = onCancel,
+                variant = SnapFindButtonVariant.Tonal,
+                fillWidth = false,
             )
         }
 
@@ -293,7 +316,7 @@ private fun UploadIdleEmptyPreview() {
             jobHistory = emptyList(),
             hasSelfie = false,
             hasZip = false,
-            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onOpenJob = {},
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
         )
     }
 }
@@ -307,7 +330,7 @@ private fun UploadIdleReadyPreview() {
             jobHistory = previewJobs,
             hasSelfie = true,
             hasZip = true,
-            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onOpenJob = {},
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
         )
     }
 }
@@ -321,7 +344,7 @@ private fun UploadErrorPreview() {
             jobHistory = previewJobs,
             hasSelfie = true,
             hasZip = true,
-            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onOpenJob = {},
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
         )
     }
 }
@@ -335,7 +358,7 @@ private fun UploadMatchingIndeterminatePreview() {
             jobHistory = emptyList(),
             hasSelfie = true,
             hasZip = true,
-            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onOpenJob = {},
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
         )
     }
 }
@@ -349,7 +372,7 @@ private fun UploadMatchingProgressPreview() {
             jobHistory = emptyList(),
             hasSelfie = true,
             hasZip = true,
-            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onOpenJob = {},
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
         )
     }
 }
@@ -363,7 +386,7 @@ private fun UploadIdleDarkPreview() {
             jobHistory = previewJobs,
             hasSelfie = false,
             hasZip = false,
-            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onOpenJob = {},
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
         )
     }
 }
@@ -377,7 +400,7 @@ private fun UploadSmallPhonePreview() {
             jobHistory = previewJobs,
             hasSelfie = true,
             hasZip = true,
-            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onOpenJob = {},
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
         )
     }
 }
@@ -391,7 +414,7 @@ private fun UploadLargePhonePreview() {
             jobHistory = previewJobs,
             hasSelfie = true,
             hasZip = true,
-            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onOpenJob = {},
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
         )
     }
 }

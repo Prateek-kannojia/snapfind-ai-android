@@ -12,9 +12,10 @@ Backend lives in [`../Face_recognition/`](../Face_recognition/) — no longer ca
 
 0. First launch only: a splash screen, then Onboarding downloads the ~16MB face-matching models with a real progress bar (skipped on every launch after)
 1. Pick a selfie + a ZIP of event photos
-2. Tap "Find My Photos" — unzips locally, matches on-device
-3. Results screen shows every matched photo in a grid — tap one for a full-screen swipeable view, long-press to select multiple and remove or download them, or download all straight to the system gallery
-4. Results survive closing the app — the last completed job reloads automatically on relaunch
+2. Tap "Find My Photos" — unzips locally, matches on-device, cancellable while it runs
+3. Results screen shows every matched photo in a grid. One download control per mode: `Download N` in the app bar for everything outstanding, a `Download` action in the selection bar after a long-press, and download/remove in the full-screen viewer for a single photo. Tiles themselves show only status — a tick once a photo is in your gallery
+4. Downloads are idempotent — re-downloading never creates a second copy, and the tick is re-checked against your gallery on every return to the screen, so deleting a photo in Photos clears it
+5. Results survive closing the app, and every past job stays reachable as a Recent Jobs card on the Upload screen
 
 ## Architecture
 
@@ -28,11 +29,13 @@ Domain (use case, repository interface)
 Data (repository impl, wraps :facesdk's FaceMatchEngine)
 ```
 
-The use case (`FindFacesInPhotosUseCase`) owns the actual sequence: unzip → match on-device → clean up. `:facesdk` is a standalone Gradle module (no Compose/Hilt/Retrofit deps) with its own public API — see DEEP_DIVE.md for its facade + primitives shape.
+The use case (`FindFacesInPhotosUseCase`) owns the actual sequence: prepare the selfie → unzip → match on-device → persist → clean up. It owns its dispatchers too, rather than trusting the caller's: file work on `Dispatchers.IO`, matching on `Dispatchers.Default`. `:facesdk` is a standalone Gradle module (no Compose/Hilt/Retrofit deps) with its own public API — see DEEP_DIVE.md for its facade + primitives shape.
+
+A shared design layer sits under the screens: `ui/theme/` holds spacing, dimension, shape and colour tokens (a dp literal in a screen is treated as a smell), and `presentation/components/` holds one definition each of the pill button, photo tile, status badge, selection indicator and wavy progress ring — so a saved tick and a selected tick can't drift into different shapes.
 
 ## Tech stack
 
-Kotlin · Jetpack Compose · Hilt (DI) · ONNX Runtime (on-device inference) · Coroutines + StateFlow · Coil (image loading) · Room (last-job persistence) · MediaStore (gallery save) · core-splashscreen (first-run splash) · Clean Architecture · Retrofit (dormant server path, kept not deleted)
+Kotlin · Jetpack Compose (Material 3, expressive progress indicators) · Hilt (DI) · ONNX Runtime (on-device inference) · Coroutines + StateFlow · Coil (image loading) · Room (job history) · MediaStore (gallery save + saved-state reconciliation) · core-splashscreen (first-run splash) · Clean Architecture · Retrofit (dormant server path, kept not deleted)
 
 ## Run it
 
@@ -46,10 +49,26 @@ app/src/main/java/com/example/snapfindai/
 ├── di/            # Hilt modules
 ├── data/          # repository implementations (active: on-device, Room, MediaStore; dormant: Retrofit)
 ├── domain/        # repository interfaces, domain models, use cases
-├── presentation/  # Compose screens + ViewModels (onboarding, upload, results, full-screen viewer)
+├── presentation/
+│   ├── components/  # shared UI primitives (button, photo card, status badge, progress ring)
+│   ├── screens/     # onboarding, upload, results, full-screen viewer
+│   └── util/        # Compose-level helpers (storage-permission gate)
+├── ui/theme/      # design tokens: color, type, spacing, dimens, shapes
 └── utils/
 
 facesdk/           # standalone on-device face-matching SDK, sibling module
 ```
+
+### Storage at a glance
+
+| Where | What | Lifetime |
+|---|---|---|
+| `filesDir/facesdk_models/` | the two ONNX models (~16MB) | downloaded once, kept |
+| `filesDir/saved_matches/<jobId>/` | matched photos, one folder per job | until the job's matches are removed |
+| `filesDir/job_work/` | scratch: copied selfie, copied ZIP, extraction | cleared at the start and end of every run |
+| Room `snapfind.db` | job + match metadata only, never image bytes | until app data is cleared |
+| `Pictures/SnapFindAI/` | photos the user downloaded | survives uninstall — these are theirs |
+
+Deliberately **not** `cacheDir`: the OS empties it under storage pressure, which once deleted a job's selfie mid-run. See DEEP_DIVE.md.
 
 Full layer-by-layer explanation, why each pattern was chosen, and code walkthroughs: **[DEEP_DIVE.md](DEEP_DIVE.md)**.

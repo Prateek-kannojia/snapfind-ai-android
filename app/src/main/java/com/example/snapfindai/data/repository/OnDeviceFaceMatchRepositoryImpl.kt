@@ -15,6 +15,8 @@ import com.example.snapfindai.facesdk.api.FaceEmbedder
 import com.example.snapfindai.facesdk.model.FaceEmbedding
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -104,6 +106,12 @@ class OnDeviceFaceMatchRepositoryImpl @Inject constructor(
 
         val matches = mutableListOf<FaceMatchResult>()
         eventPhotos.forEachIndexed { index, photo ->
+            // Checked before the decode, not left to the next suspension
+            // point: decoding and rotating a full-resolution photo is the
+            // most expensive step here, and there's no reason to spend it on
+            // a job the user has already called off.
+            currentCoroutineContext().ensureActive()
+
             val bitmap: Bitmap? = try {
                 BitmapDecoder.decodeWithExifCorrection(photo)
             } catch (e: Exception) {

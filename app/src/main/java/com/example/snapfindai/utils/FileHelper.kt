@@ -2,6 +2,8 @@ package com.example.snapfindai.utils
 
 import android.content.Context
 import android.net.Uri
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStream
@@ -58,9 +60,12 @@ object FileHelper {
      * names any more than we'd trust a downloaded one.
      *
      * Blocking disk I/O, and for a real event folder that means a lot of it
-     * -- callers are responsible for being off the main thread.
+     * -- callers are responsible for being off the main thread. Suspending
+     * only so it can check for cancellation between entries: extracting
+     * 500MB is otherwise one uninterruptible block, and "cancel" during it
+     * would do nothing until the whole archive had been written out.
      */
-    fun unzip(zipFile: File, destDir: File): List<File> {
+    suspend fun unzip(zipFile: File, destDir: File): List<File> {
         destDir.mkdirs()
         val destCanonicalPath = destDir.canonicalPath
         val extracted = mutableListOf<File>()
@@ -68,6 +73,7 @@ object FileHelper {
         ZipInputStream(zipFile.inputStream()).use { zis ->
             var entry = zis.nextEntry
             while (entry != null) {
+                currentCoroutineContext().ensureActive()
                 if (!entry.isDirectory) {
                     val outFile = File(destDir, entry.name).canonicalFile
                     if (!outFile.path.startsWith(destCanonicalPath + File.separator)) {

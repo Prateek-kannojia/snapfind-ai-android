@@ -10,6 +10,7 @@ import com.example.snapfindai.domain.usecase.GetJobHistoryUseCase
 import com.example.snapfindai.utils.FileHelper
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -53,14 +54,35 @@ class UploadViewModel @Inject constructor(
     private val _navigateToResults = MutableSharedFlow<Unit>()
     val navigateToResults: SharedFlow<Unit> = _navigateToResults.asSharedFlow()
 
+    // Held so the user can call the job off -- a real event folder takes
+    // minutes, which is long enough that committing to it by one tap with no
+    // way out isn't reasonable.
+    private var matchingJob: Job? = null
+
     init {
         refreshHistory()
+    }
+
+    /**
+     * Stops the running job and goes back to the picker. Cancellation is
+     * cooperative, so this returns before the job has necessarily noticed --
+     * which is why the state is set here rather than waiting for the
+     * coroutine to unwind, and why [UploadUiState.Processing] is checked
+     * before each progress update below.
+     *
+     * The use case's own `finally` still runs on cancellation, so the
+     * half-extracted event folder is cleaned up rather than abandoned.
+     */
+    fun cancelJob() {
+        matchingJob?.cancel()
+        matchingJob = null
+        _uiState.value = UploadUiState.Idle
     }
 
     fun submitJob(context: Context, selfieUri: Uri, zipUri: Uri) {
         _uiState.value = UploadUiState.Processing()
 
-        viewModelScope.launch {
+        matchingJob = viewModelScope.launch {
             // FileHelper does disk I/O (copying files), so we run it on the IO dispatcher
             val selfieFile = withContext(Dispatchers.IO) {
                 // Reclaims anything a previous run left behind by being killed
@@ -79,7 +101,12 @@ class UploadViewModel @Inject constructor(
             }
 
             findFacesInPhotos(selfieFile, zipFile, onProgress = { scored, total ->
-                _uiState.value = UploadUiState.Processing(scored, total)
+                // Only while still processing: a cancel sets Idle immediately,
+                // and a progress callback already in flight would otherwise
+                // flip the screen back to Processing with no job behind it.
+                if (_uiState.value is UploadUiState.Processing) {
+                    _uiState.value = UploadUiState.Processing(scored, total)
+                }
             }).fold(
                 onSuccess = { matches ->
                     if (matches.isEmpty()) {
