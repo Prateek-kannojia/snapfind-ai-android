@@ -6,6 +6,7 @@ import com.example.snapfindai.domain.repository.JobHistoryRepository
 import com.example.snapfindai.facesdk.FaceMatcher
 import com.example.snapfindai.facesdk.NoFaceDetectedException
 import com.example.snapfindai.utils.FileHelper
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -74,6 +75,13 @@ class FindFacesInPhotosUseCase @Inject constructor(
             Result.success(persisted)
         } catch (e: NoFaceDetectedException) {
             Result.failure(Exception("We couldn't find a face in your selfie. Try a clearer, well-lit photo.", e))
+        } catch (e: CancellationException) {
+            // Rethrown, never turned into a Result.failure: CancellationException
+            // extends Exception, so the generic catch below would otherwise
+            // swallow it and report a cancelled job to the user as a failed
+            // one -- and leave the coroutine looking like it completed
+            // normally, which is how structured concurrency gets broken.
+            throw e
         } catch (e: Exception) {
             Result.failure(e)
         } finally {

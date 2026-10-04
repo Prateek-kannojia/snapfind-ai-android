@@ -2,6 +2,8 @@ package com.example.snapfindai.facesdk
 
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.net.URL
@@ -68,8 +70,18 @@ object ModelDownloader {
             return@withContext dest
         }
 
+        // Downloaded to a temp name and only renamed once the checksum passes,
+        // so an interrupted download can never leave a half-written file under
+        // the real name for a later run to load as a valid model. Deleted on
+        // the way out of a failure or cancellation, rather than leaving ~16MB
+        // of dead weight behind until the next attempt overwrites it.
         val tempFile = File(destDir, "$fileName.download")
-        download(url, tempFile, onProgress)
+        try {
+            download(url, tempFile, onProgress)
+        } catch (e: Throwable) {
+            tempFile.delete()
+            throw e
+        }
 
         val actualSha256 = sha256Of(tempFile)
         if (!actualSha256.equals(sha256, ignoreCase = true)) {
@@ -88,7 +100,14 @@ object ModelDownloader {
         dest
     }
 
-    private fun download(url: String, dest: File, onProgress: ((Long, Long) -> Unit)?) {
+    /**
+     * Suspending so the transfer can be cancelled part-way. A read/write loop
+     * has no suspension points of its own, so without the per-chunk check a
+     * caller cancelling this would keep downloading every remaining byte
+     * before anything noticed -- which for a ~16MB model over a slow
+     * connection makes a cancel button decorative.
+     */
+    private suspend fun download(url: String, dest: File, onProgress: ((Long, Long) -> Unit)?) {
         val connection = URL(url).openConnection()
         val total = connection.contentLengthLong
         connection.getInputStream().use { input ->
@@ -96,6 +115,7 @@ object ModelDownloader {
                 val buffer = ByteArray(64 * 1024)
                 var downloaded = 0L
                 while (true) {
+                    currentCoroutineContext().ensureActive()
                     val read = input.read(buffer)
                     if (read == -1) break
                     output.write(buffer, 0, read)

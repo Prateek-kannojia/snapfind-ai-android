@@ -46,11 +46,19 @@ fun OnboardingScreen(
     LaunchedEffect(uiState) {
         if (uiState is OnboardingUiState.Complete) onComplete()
     }
-    OnboardingContent(uiState = uiState, onStart = { viewModel.startDownload() })
+    OnboardingContent(
+        uiState = uiState,
+        onStart = { viewModel.startDownload() },
+        onCancel = { viewModel.cancelDownload() },
+    )
 }
 
 @Composable
-private fun OnboardingContent(uiState: OnboardingUiState, onStart: () -> Unit) {
+private fun OnboardingContent(
+    uiState: OnboardingUiState,
+    onStart: () -> Unit,
+    onCancel: () -> Unit = {},
+) {
     Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
         Box(
             modifier = Modifier
@@ -67,7 +75,7 @@ private fun OnboardingContent(uiState: OnboardingUiState, onStart: () -> Unit) {
                     modifier = Modifier.fillMaxWidth(),
                     uiState = uiState,
                     onStart = onStart,
-                    onCancel = {},
+                    onCancel = onCancel,
                     onPause = {},
                 )
             }
