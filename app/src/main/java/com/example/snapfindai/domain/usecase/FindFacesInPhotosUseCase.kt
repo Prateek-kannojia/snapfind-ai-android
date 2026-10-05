@@ -8,6 +8,7 @@ import com.example.snapfindai.facesdk.NoFaceDetectedException
 import com.example.snapfindai.utils.FileHelper
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import java.io.File
 import javax.inject.Inject
@@ -31,13 +32,36 @@ class FindFacesInPhotosUseCase @Inject constructor(
      * rather than trusting the caller's. It used to run on whatever thread
      * called it, which was the ViewModel's main-thread scope.
      */
+    /**
+     * [jobId] is created by the caller, once per background work request, and
+     * handed in rather than created here. A retried attempt therefore works
+     * on the same job instead of starting a new one -- which is what stopped
+     * every process kill from orphaning a row nothing would ever resume.
+     */
     suspend operator fun invoke(
+        jobId: Long,
         selfieFile: File,
         zipFile: File,
         threshold: Float = FaceMatcher.DEFAULT_THRESHOLD,
         onProgress: ((scored: Int, total: Int) -> Unit)? = null,
     ): Result<List<FaceMatchResult>> = withContext(Dispatchers.IO) {
-        val extractDir = File(zipFile.parentFile, "event_photos_${System.currentTimeMillis()}")
+        // A previous attempt may have finished everything and been killed
+        // before it could report success -- in which case redoing the work
+        // would wipe and re-save photos that are already there. Nothing to do
+        // but hand back what's already recorded.
+        if (!jobHistoryRepository.needsWork(jobId)) {
+            return@withContext Result.success(jobHistoryRepository.getJob(jobId)?.matches.orEmpty())
+        }
+
+        // Resolved in the finally below on every path the app controls. What's
+        // left unresolved is a job that started and never ended -- which only
+        // happens when the process is killed mid-run, and is the only way the
+        // app can find that out.
+        var completed = false
+
+        // Named by the job it belongs to, so leftover working directories can
+        // later be matched against the jobs that own them.
+        val extractDir = File(zipFile.parentFile, "event_photos_$jobId")
         try {
             // Before the expensive part, not after: unzipping a real event
             // folder takes minutes, and a selfie with no detectable face in
@@ -46,8 +70,21 @@ class FindFacesInPhotosUseCase @Inject constructor(
             // away, so the selfie is read and embedded exactly once per job.
             val preparedSelfie = faceMatchRepository.prepareSelfie(selfieFile)
 
-            val eventPhotos = FileHelper.unzip(zipFile, extractDir)
-                .filter { it.extension.lowercase() in setOf("jpg", "jpeg", "png") }
+            // Checked before extracting rather than discovered during it: a
+            // folder too big for the device otherwise fails minutes in, with
+            // a raw I/O error and the storage already full.
+            if (!FileHelper.hasRoomToExtract(zipFile, extractDir)) {
+                val needed = zipFile.length() / (1024 * 1024)
+                return@withContext Result.failure(
+                    Exception("Not enough free space. This needs roughly ${needed}MB free to unpack.")
+                )
+            }
+
+            val eventPhotos = FileHelper.unzip(
+                zipFile = zipFile,
+                destDir = extractDir,
+                maxTotalBytes = zipFile.length() * FileHelper.MAX_EXPANSION_FACTOR,
+            ).filter { it.extension.lowercase() in setOf("jpg", "jpeg", "png") }
             if (eventPhotos.isEmpty()) {
                 return@withContext Result.failure(Exception("No photos found in that ZIP file."))
             }
@@ -68,10 +105,11 @@ class FindFacesInPhotosUseCase @Inject constructor(
             }
 
             // Relocates matched photos out of the working directory into
-            // stable storage, and saves this as a new job -- the returned
-            // list points at the new locations, which is what lets the
-            // finally below delete the working directory wholesale.
-            val persisted = jobHistoryRepository.saveJob(threshold, matches)
+            // stable storage and marks the job complete -- the returned list
+            // points at the new locations, which is what lets the finally
+            // below delete the working directory wholesale.
+            val persisted = jobHistoryRepository.completeJob(jobId, matches)
+            completed = true
             Result.success(persisted)
         } catch (e: NoFaceDetectedException) {
             Result.failure(Exception("We couldn't find a face in your selfie. Try a clearer, well-lit photo.", e))
@@ -85,6 +123,19 @@ class FindFacesInPhotosUseCase @Inject constructor(
         } catch (e: Exception) {
             Result.failure(e)
         } finally {
+            // NonCancellable because this has to run after a cancel, and a
+            // suspend DB call in an already-cancelled coroutine throws
+            // immediately -- which would leave the row looking interrupted
+            // when the user deliberately stopped it, and have the next launch
+            // try to resume something nobody wants.
+            //
+            // Reached on success-with-no-matches, every failure, and
+            // cancellation. Not reached on process death, which is exactly
+            // the case that should leave the row behind.
+            withContext(NonCancellable) {
+                if (!completed) jobHistoryRepository.abandonJob(jobId)
+            }
+
             // Every path, including failures: these live in filesDir now, so
             // nothing else will ever clean them up. A failed job used to
             // leave the entire extracted event folder behind.

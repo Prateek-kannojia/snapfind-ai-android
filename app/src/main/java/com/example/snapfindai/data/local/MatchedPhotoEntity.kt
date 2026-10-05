@@ -16,7 +16,16 @@ import androidx.room.PrimaryKey
             onDelete = ForeignKey.CASCADE,
         )
     ],
-    indices = [Index("jobId")],
+    indices = [
+        Index("jobId"),
+        // Defence in depth for the one failure that corrupts the grid
+        // permanently: a job completing twice (process killed between its
+        // photos being written and its status being set) would insert a
+        // second row for the same path, and the results grid keys its items
+        // by path -- duplicate keys throw. The write is transactional now, so
+        // this should be unreachable; it's here so it can't come back.
+        Index(value = ["jobId", "photoPath"], unique = true),
+    ],
 )
 data class MatchedPhotoEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -26,4 +35,6 @@ data class MatchedPhotoEntity(
     val distance: Float,
     /** Non-null once saved to the device gallery -- when it happened. */
     val savedAt: Long? = null,
+    /** The gallery filename this photo maps to, derived from its contents when the job was persisted. */
+    val galleryName: String,
 )

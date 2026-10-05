@@ -14,17 +14,42 @@
          including the download-progress/completed one. Harmless to declare
          on older versions: it's simply not a runtime permission there. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!--
+      A matching job runs for minutes and has to survive the user leaving the
+      app, so it runs as a foreground service. The dataSync type is the one
+      WorkManager's own foreground service is declared with; its Android 15+
+      daily quota is hours, so a job measured in minutes never approaches it.
+      Note the bargain: a foreground service MUST show a notification. If
+      POST_NOTIFICATIONS is denied the service still runs, the notification is
+      just suppressed.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
+    <!--
+      allowBackup is off, and that is the point rather than an oversight. The
+      app persists selfies, matched photos of people's faces, and a database
+      of who matched whom. Default backup behaviour was uploading all of it to
+      cloud backup, which contradicted the app's central claim that face
+      matching happens on device and the photos never leave it. The rule files
+      name the same paths as defence in depth, so turning this back on would
+      be a deliberate decision rather than an accident.
+
+      usesCleartextTraffic is no longer declared here. It existed for the
+      dormant Retrofit path pointing at a hardcoded LAN address, which nothing
+      in the active flow calls, and leaving it on meant release builds allowed
+      unencrypted traffic for no benefit. It now lives in the debug manifest
+      only, so local backend work still works.
+    -->
     <application
         android:name=".SnapFindApplication"
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:usesCleartextTraffic="true"
         android:theme="@style/Theme.SnapFindAI">
         <activity
             android:name=".MainActivity"
@@ -49,6 +74,33 @@
             android:exported="true"
             android:label="Timing Spike"
             android:theme="@style/Theme.SnapFindAI" />
+
+        <!--
+          WorkManager's own foreground service, re-declared only to attach the
+          service type. Required from Android 14 (API 34) onward: a foreground
+          service with no declared type is rejected at runtime.
+        -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
+
+        <!--
+          Turns off WorkManager's automatic start-up so it can be initialised
+          on demand with a Hilt-aware WorkerFactory instead (see
+          SnapFindApplication). Without this the default factory wins and a
+          worker with injected dependencies can't be constructed.
+        -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.work.WorkManagerInitializer"
+                android:value="androidx.startup"
+                tools:node="remove" />
+        </provider>
     </application>
 
 </manifest>

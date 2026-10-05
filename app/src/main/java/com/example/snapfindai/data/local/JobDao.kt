@@ -3,6 +3,7 @@ package com.example.snapfindai.data.local
 import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.Query
+import androidx.room.Transaction
 
 @Dao
 interface JobDao {
@@ -12,24 +13,67 @@ interface JobDao {
     @Insert
     suspend fun insertMatchedPhotos(photos: List<MatchedPhotoEntity>)
 
-    @Query("SELECT * FROM jobs ORDER BY timestamp DESC LIMIT 1")
-    suspend fun getLastJob(): JobEntity?
+    /** Marks a job finished. Until this runs, its row stays [JobStatus.Running] -- see [JobStatus] for why that's the interruption signal. */
+    @Query("UPDATE jobs SET status = :status WHERE id = :jobId")
+    suspend fun setJobStatus(jobId: Long, status: String)
+
+    /** For a job that ended without results to show: failed, or cancelled. Cascades its matched photos. */
+    @Query("DELETE FROM jobs WHERE id = :jobId")
+    suspend fun deleteJob(jobId: Long)
+
+    /** Jobs that started and never reached an ending -- i.e. the process died mid-job. Oldest first. */
+    @Query("SELECT * FROM jobs WHERE status = :status ORDER BY timestamp ASC")
+    suspend fun getJobsWithStatus(status: String): List<JobEntity>
+
+    /** Null when the row is gone. Lets a restarted worker tell "still to do" from "already finished" before redoing minutes of work. */
+    @Query("SELECT status FROM jobs WHERE id = :jobId")
+    suspend fun getJobStatus(jobId: Long): String?
+
+    /** The job a work request is already carrying, if it has started one. Null on a request's first run. */
+    @Query("SELECT id FROM jobs WHERE workId = :workId LIMIT 1")
+    suspend fun getJobIdForWork(workId: String): Long?
+
+    /**
+     * Finishes a job in one transaction: its photos and its status become
+     * visible together or not at all.
+     *
+     * Previously two separate calls, which left a window where the process
+     * could die with photos written but the job still marked running. The
+     * retry would then redo everything and insert a *second* set of rows for
+     * the same paths -- duplicate keys in the results grid, which throws, and
+     * keeps throwing until app data is cleared.
+     */
+    @Transaction
+    suspend fun completeJobWithPhotos(jobId: Long, photos: List<MatchedPhotoEntity>, completeStatus: String) {
+        insertMatchedPhotos(photos)
+        setJobStatus(jobId, completeStatus)
+    }
+
+    // The three queries below filter to finished jobs on purpose. A job's row
+    // now exists while it is still running, with no matched photos attached
+    // yet -- so without the filter an in-progress job would surface as a
+    // history card showing zero photos, and would be picked up as "the last
+    // completed job" by Results.
+    @Query("SELECT * FROM jobs WHERE status = :status ORDER BY timestamp DESC LIMIT 1")
+    suspend fun getLastJob(status: String): JobEntity?
 
     @Query("SELECT * FROM jobs WHERE id = :jobId")
     suspend fun getJobById(jobId: Long): JobEntity?
 
-    @Query("SELECT * FROM jobs ORDER BY timestamp DESC")
-    suspend fun getAllJobs(): List<JobEntity>
+    @Query("SELECT * FROM jobs WHERE status = :status ORDER BY timestamp DESC")
+    suspend fun getAllJobs(status: String): List<JobEntity>
 
     /**
-     * Self-heals jobs left with zero matched photos -- shouldn't happen
-     * going forward (FindFacesInPhotosUseCase skips saveJob() entirely for
-     * an empty match list now), but cleans up any stray row from before
-     * that fix, or from a process death between insertJob() and
-     * insertMatchedPhotos() succeeding.
+     * Self-heals finished jobs left with zero matched photos -- a stray row
+     * from before empty match lists were handled, or from a process death
+     * between the job row and its photos being written.
+     *
+     * Scoped to the given status for a reason that would otherwise be a bug:
+     * a *running* job legitimately has no photos yet, and this would delete
+     * it out from under itself.
      */
-    @Query("DELETE FROM jobs WHERE id NOT IN (SELECT DISTINCT jobId FROM matched_photos)")
-    suspend fun deleteEmptyJobs()
+    @Query("DELETE FROM jobs WHERE status = :status AND id NOT IN (SELECT DISTINCT jobId FROM matched_photos)")
+    suspend fun deleteEmptyJobs(status: String)
 
     /**
      * `ORDER BY id` is load-bearing, not cosmetic: without it SQLite makes no

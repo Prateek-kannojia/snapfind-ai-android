@@ -1,5 +1,6 @@
 package com.example.snapfindai.domain.repository
 
+import com.example.snapfindai.domain.model.AbandonedJob
 import com.example.snapfindai.domain.model.FaceMatchResult
 import com.example.snapfindai.domain.model.JobSummary
 import com.example.snapfindai.domain.model.SavedJob
@@ -8,14 +9,59 @@ import java.io.File
 /** Keeps every completed job so past results survive an app restart and can be reopened, not just the most recent one. */
 interface JobHistoryRepository {
     /**
-     * Persists [matches] into stable storage as a new job -- previously
-     * saved jobs are kept, not replaced. Returns an updated match list
-     * pointing at the newly persisted file locations -- the caller's
-     * original [matches] list's files may no longer exist after this call
-     * (they've been moved, not copied-and-kept), so the caller must use the
-     * returned list, not the one it passed in.
+     * The job [workId] is carrying, creating it on that request's first run.
+     *
+     * Keyed on the work request so that retries converge rather than fork: an
+     * attempt killed mid-run is rescheduled with the same request id, finds
+     * the same job, and continues it. Creating a row per *attempt* instead
+     * meant every process kill left an orphan nothing would ever resume.
+     *
+     * Called from inside the worker, deliberately. Creating the row before
+     * enqueuing meant a three-step sequence -- record the job, build the
+     * request, link them, enqueue -- with a gap at each step where a crash
+     * left a job that no work was coming for. Doing it here means the row
+     * exists only once something is genuinely running, and an enqueue that
+     * never happens leaves nothing behind at all.
+     *
+     * A job still in this state when nothing is running it was interrupted by
+     * the process dying — see [abandonedJobs].
      */
-    suspend fun saveJob(threshold: Float, matches: List<FaceMatchResult>): List<FaceMatchResult>
+    suspend fun findOrStartJob(workId: String, threshold: Float): Long
+
+    /**
+     * Whether [jobId] still has work outstanding -- false if it's already
+     * finished, or if the row is gone. A retried attempt checks this before
+     * starting, since the previous attempt may have completed everything and
+     * died before it could report success.
+     */
+    suspend fun needsWork(jobId: Long): Boolean
+
+    /**
+     * Finishes the job [jobId] started, persisting [matches] into stable
+     * storage. Returns an updated match list pointing at the newly persisted
+     * file locations -- the caller's original [matches] list's files may no
+     * longer exist after this call (they've been moved, not copied-and-kept),
+     * so the caller must use the returned list, not the one it passed in.
+     */
+    suspend fun completeJob(jobId: Long, matches: List<FaceMatchResult>): List<FaceMatchResult>
+
+    /**
+     * Forgets a job that ended with nothing to show -- it failed, or the user
+     * cancelled it. Distinct from simply never calling [completeJob], which
+     * leaves the job looking interrupted rather than abandoned on purpose.
+     */
+    suspend fun abandonJob(jobId: Long)
+
+    /**
+     * Jobs that were started and never finished, oldest first. Since every
+     * in-app ending either completes or abandons a job, anything still in
+     * this state was interrupted by the process dying — which is the only
+     * way the app finds out that happened.
+     *
+     * Each carries the work request that was running it, because the row
+     * alone can't say whether anything is still coming to resume it.
+     */
+    suspend fun abandonedJobs(): List<AbandonedJob>
 
     /** The most recently completed job, if any -- what a fresh "Find My Photos" run should show right after finishing. */
     suspend fun getLastJob(): SavedJob?
