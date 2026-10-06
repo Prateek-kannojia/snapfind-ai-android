@@ -1,19 +1,36 @@
 <?xml version="1.0" encoding="utf-8"?><!--
-   Sample data extraction rules file; uncomment and customize as necessary.
-   See https://developer.android.com/about/versions/12/backup-restore#xml-changes
-   for details.
+   Android 12+ (API 31+) backup and device transfer rules.
+
+   Everything this app persists is excluded, deliberately:
+
+   Privacy. The data is selfies, matched photos of people's faces, and a
+   database describing who matched whom. The app's whole premise is that face
+   matching happens on the device and the photos never leave it, which was not
+   true while the default backup behaviour was uploading all of it.
+
+   Correctness. Auto backup has a 25MB per app quota and a job's matched
+   photos routinely exceed that, so the database would restore while the
+   photos it points at were dropped. That leaves a history grid full of cards
+   referencing files that do not exist, which is worse than no history.
+
+   Nothing is lost that cannot be rebuilt: the models re download, and a job
+   can be re run from the user's own ZIP.
+
+   allowBackup is also false in the manifest, so these rules are defence in
+   depth rather than the only guard. They exist so that turning backup on
+   later is a deliberate choice with the sensitive paths already named.
 -->
 <data-extraction-rules>
     <cloud-backup>
-        <!-- TODO: Use <include> and <exclude> to control what is backed up.
-        <include .../>
-        <exclude .../>
-        -->
+        <exclude domain="database" path="snapfind.db" />
+        <exclude domain="file" path="saved_matches" />
+        <exclude domain="file" path="job_work" />
+        <exclude domain="file" path="facesdk_models" />
     </cloud-backup>
-    <!--
     <device-transfer>
-        <include .../>
-        <exclude .../>
+        <exclude domain="database" path="snapfind.db" />
+        <exclude domain="file" path="saved_matches" />
+        <exclude domain="file" path="job_work" />
+        <exclude domain="file" path="facesdk_models" />
     </device-transfer>
-    -->
 </data-extraction-rules>

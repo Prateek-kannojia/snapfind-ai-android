@@ -30,7 +30,19 @@ class AppStartupViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            _modelsReady.value = checkModelsReady()
+            // The check reads files and hashes them, so it can fail on I/O.
+            // Unhandled, that was an uncaught coroutine exception -- a crash
+            // on launch, before any UI exists to report it.
+            //
+            // "Couldn't tell" degrades to "not ready", which routes to
+            // Onboarding. That screen will try to fetch the models and has
+            // its own error state and Retry, so a real problem surfaces
+            // somewhere the user can act on it instead of at the splash.
+            _modelsReady.value = runCatching { checkModelsReady() }.getOrDefault(false)
+
+            // finally in spirit: the splash is held up by this flag, so
+            // failing to clear it would leave the app on the splash screen
+            // forever with no way forward.
             _isChecking.value = false
         }
     }

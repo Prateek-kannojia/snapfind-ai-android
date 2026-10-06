@@ -29,6 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Devices
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.sp
@@ -161,7 +162,7 @@ private fun ResultsContent(
                 selectedCount = selectedCount,
                 hasMatches = loaded != null && loaded.matches.isNotEmpty(),
                 notSavedCount = loaded?.notSavedCount ?: 0,
-                batchRunning = loaded?.batchProgress != null,
+                operationInFlight = loaded?.operationInFlight == true,
                 onBack = onNavigateBack,
                 onClearSelection = onClearSelection,
                 onSaveSelected = onSaveSelected,
@@ -223,6 +224,22 @@ private fun ResultsContent(
                         WavyProgressRing(progress = null)
                     }
                 }
+                // Distinct from an empty Loaded state, which says "nothing
+                // matched". This says "we couldn't find out", which is a
+                // different thing to tell someone.
+                is ResultsUiState.Error -> {
+                    Box(
+                        modifier = Modifier.fillMaxWidth().weight(1f).padding(SnapFindSpacing.xl),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            state.message,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodyMedium,
+                            textAlign = TextAlign.Center,
+                        )
+                    }
+                }
             }
         }
     }
@@ -241,7 +258,7 @@ private fun ResultsHeader(
     selectedCount: Int,
     hasMatches: Boolean,
     notSavedCount: Int,
-    batchRunning: Boolean,
+    operationInFlight: Boolean,
     onBack: () -> Unit,
     onClearSelection: () -> Unit,
     onSaveSelected: () -> Unit,
@@ -256,6 +273,7 @@ private fun ResultsHeader(
         if (selecting) {
             SelectionTopAppBar(
                 selectedCount = selectedCount,
+                operationInFlight = operationInFlight,
                 onClearSelection = onClearSelection,
                 onSaveSelected = onSaveSelected,
                 onRemoveSelected = onRemoveSelected,
@@ -264,7 +282,7 @@ private fun ResultsHeader(
             DefaultTopAppBar(
                 hasMatches = hasMatches,
                 notSavedCount = notSavedCount,
-                batchRunning = batchRunning,
+                operationInFlight = operationInFlight,
                 onBack = onBack,
                 onSaveAll = onSaveAll,
             )
@@ -277,7 +295,7 @@ private fun ResultsHeader(
 private fun DefaultTopAppBar(
     hasMatches: Boolean,
     notSavedCount: Int,
-    batchRunning: Boolean,
+    operationInFlight: Boolean,
     onBack: () -> Unit,
     onSaveAll: () -> Unit,
 ) {
@@ -299,7 +317,7 @@ private fun DefaultTopAppBar(
                 SnapFindButton(
                     text = if (notSavedCount == 0) "All saved" else "Download $notSavedCount",
                     onClick = onSaveAll,
-                    enabled = notSavedCount > 0 && !batchRunning,
+                    enabled = notSavedCount > 0 && !operationInFlight,
                     variant = SnapFindButtonVariant.Tonal,
                     fillWidth = false,
                     modifier = Modifier.padding(end = SnapFindSpacing.sm),
@@ -321,6 +339,7 @@ private fun DefaultTopAppBar(
 @Composable
 private fun SelectionTopAppBar(
     selectedCount: Int,
+    operationInFlight: Boolean,
     onClearSelection: () -> Unit,
     onSaveSelected: () -> Unit,
     onRemoveSelected: () -> Unit,
@@ -333,13 +352,18 @@ private fun SelectionTopAppBar(
             }
         },
         actions = {
+            // Both disabled together while anything is running. Saving and
+            // removing touch the same files, so the dangerous combination
+            // isn't two saves -- it's a removal landing while photos are
+            // mid-copy into the gallery.
             SnapFindButton(
                 text = "Download",
                 onClick = onSaveSelected,
+                enabled = !operationInFlight,
                 variant = SnapFindButtonVariant.Tonal,
                 fillWidth = false,
             )
-            IconButton(onClick = onRemoveSelected) {
+            IconButton(onClick = onRemoveSelected, enabled = !operationInFlight) {
                 Icon(Icons.Default.Delete, contentDescription = "Remove selected from matches")
             }
         },

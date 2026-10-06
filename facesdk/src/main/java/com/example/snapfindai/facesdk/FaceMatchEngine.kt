@@ -83,9 +83,15 @@ class FaceMatchEngine internal constructor(
         val largest = faces.maxByOrNull { it.box.width() * it.box.height() }
             ?: throw NoFaceDetectedException("No face detected in selfie")
         val aligned = FaceAligner.align(selfie, largest.landmarks)
-        val embedding = embedder.embed(aligned)
-        aligned.recycle()
-        return embedding
+        // finally: embed() can throw, and the aligned crop is ours to free
+        // either way. Left to the garbage collector it would be reclaimed
+        // eventually, but "eventually" is the wrong answer under the memory
+        // pressure that caused the throw in the first place.
+        return try {
+            embedder.embed(aligned)
+        } finally {
+            aligned.recycle()
+        }
     }
 
     /** Null means no face was found in the photo — a valid outcome, not an error. */
@@ -93,10 +99,18 @@ class FaceMatchEngine internal constructor(
         checkNotClosed()
         val faces = detector.detect(eventPhoto)
         if (faces.isEmpty()) return null
+        // Same finally as embedSelfie, and it matters more here: this runs
+        // once per face per photo, so a group shot across a few hundred
+        // photos is thousands of crops. A caller scoring a batch treats a
+        // throw as "no match" and keeps going, so anything systematic would
+        // otherwise leak on every one of them.
         return faces.minOf { face ->
             val aligned = FaceAligner.align(eventPhoto, face.landmarks)
-            val embedding = embedder.embed(aligned)
-            aligned.recycle()
+            val embedding = try {
+                embedder.embed(aligned)
+            } finally {
+                aligned.recycle()
+            }
             FaceMatcher.distance(selfieEmbedding, embedding)
         }
     }

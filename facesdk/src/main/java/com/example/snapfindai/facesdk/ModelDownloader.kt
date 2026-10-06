@@ -4,6 +4,7 @@ import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.job
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.net.URL
@@ -23,6 +24,10 @@ import java.security.MessageDigest
  * [com.example.snapfindai.facesdk.api.FaceEmbedder.createFromFile].
  */
 object ModelDownloader {
+
+    /** Generous enough for a slow connection, short enough that a dead one fails rather than hanging. */
+    private const val CONNECT_TIMEOUT_MS = 15_000
+    private const val READ_TIMEOUT_MS = 30_000
 
     class ChecksumMismatchException(message: String) : Exception(message)
 
@@ -108,20 +113,39 @@ object ModelDownloader {
      * connection makes a cancel button decorative.
      */
     private suspend fun download(url: String, dest: File, onProgress: ((Long, Long) -> Unit)?) {
-        val connection = URL(url).openConnection()
+        // Without these the defaults are unlimited, so a connection that
+        // stalls rather than failing leaves the download hanging forever --
+        // and the per-chunk cancellation check below never runs, because the
+        // read it's guarding never returns.
+        val connection = URL(url).openConnection().apply {
+            connectTimeout = CONNECT_TIMEOUT_MS
+            readTimeout = READ_TIMEOUT_MS
+        }
         val total = connection.contentLengthLong
+
         connection.getInputStream().use { input ->
-            dest.outputStream().use { output ->
-                val buffer = ByteArray(64 * 1024)
-                var downloaded = 0L
-                while (true) {
-                    currentCoroutineContext().ensureActive()
-                    val read = input.read(buffer)
-                    if (read == -1) break
-                    output.write(buffer, 0, read)
-                    downloaded += read
-                    onProgress?.invoke(downloaded, total)
+            // Timeouts alone would mean a cancel sits unnoticed until the
+            // current read times out. Closing the stream from the outside
+            // when this job is cancelled makes the blocked read throw at
+            // once, which is the only way to interrupt blocking I/O.
+            val closeOnCancel = currentCoroutineContext().job.invokeOnCompletion { cause ->
+                if (cause != null) runCatching { input.close() }
+            }
+            try {
+                dest.outputStream().use { output ->
+                    val buffer = ByteArray(64 * 1024)
+                    var downloaded = 0L
+                    while (true) {
+                        currentCoroutineContext().ensureActive()
+                        val read = input.read(buffer)
+                        if (read == -1) break
+                        output.write(buffer, 0, read)
+                        downloaded += read
+                        onProgress?.invoke(downloaded, total)
+                    }
                 }
+            } finally {
+                closeOnCancel.dispose()
             }
         }
     }

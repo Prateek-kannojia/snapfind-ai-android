@@ -11,6 +11,7 @@ import com.example.snapfindai.domain.usecase.ReconcileSavedPhotosUseCase
 import com.example.snapfindai.domain.usecase.RemoveMatchedPhotosUseCase
 import com.example.snapfindai.domain.usecase.SaveMatchedPhotoUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -48,12 +49,22 @@ class ResultsViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            val job = if (requestedJobId != null) getJob(requestedJobId) else getLastJob()
-            val matches = reconcileSavedPhotos(job?.matches.orEmpty())
-            _uiState.value = ResultsUiState.Loaded(
-                jobId = job?.id ?: -1L,
-                matches = matches.map { MatchItemState(it, statusFor(it)) },
-            )
+            // Reads the database and queries MediaStore, either of which can
+            // throw. Unhandled that was an uncaught coroutine exception, so
+            // opening Results on a bad read crashed the app instead of saying
+            // anything.
+            _uiState.value = try {
+                val job = if (requestedJobId != null) getJob(requestedJobId) else getLastJob()
+                val matches = reconcileSavedPhotos(job?.matches.orEmpty())
+                ResultsUiState.Loaded(
+                    jobId = job?.id ?: -1L,
+                    matches = matches.map { MatchItemState(it, statusFor(it)) },
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                ResultsUiState.Error("Couldn't load your matches. ${e.message ?: "Please try again."}")
+            }
         }
     }
 
@@ -68,8 +79,16 @@ class ResultsViewModel @Inject constructor(
         val state = _uiState.value as? ResultsUiState.Loaded ?: return
         if (state.batchProgress != null) return // mid-batch: statuses are being written right now
         viewModelScope.launch {
-            val job = if (requestedJobId != null) getJob(requestedJobId) else getLastJob()
-            val matches = reconcileSavedPhotos(job?.matches.orEmpty())
+            // Runs on every resume, and reconcile queries MediaStore -- the
+            // most likely thing here to throw on an unusual device. A failed
+            // refresh deliberately leaves the screen as it is rather than
+            // replacing working content with an error: what's on screen was
+            // correct a moment ago, and the next resume will try again.
+            val job = runCatching {
+                if (requestedJobId != null) getJob(requestedJobId) else getLastJob()
+            }.getOrNull() ?: return@launch
+            val matches = runCatching { reconcileSavedPhotos(job.matches) }.getOrNull() ?: return@launch
+
             updateLoaded { current ->
                 // A failure message is the user's only record of what went
                 // wrong, so it survives a refresh; everything else comes
@@ -99,15 +118,24 @@ class ResultsViewModel @Inject constructor(
 
     fun removeSelected() {
         val state = _uiState.value as? ResultsUiState.Loaded ?: return
+        if (state.operationInFlight) return
         val toRemove = state.matches.filter { it.match.photo in state.selectedPhotos }.map { it.match }
         if (toRemove.isEmpty()) return
+
+        updateLoaded { it.copy(operationInFlight = true) }
         viewModelScope.launch {
-            removeMatchedPhotos(toRemove)
-            updateLoaded { s ->
-                s.copy(
-                    matches = s.matches.filterNot { it.match.photo in state.selectedPhotos },
-                    selectedPhotos = emptySet(),
-                )
+            try {
+                removeMatchedPhotos(toRemove)
+                updateLoaded { s ->
+                    s.copy(
+                        matches = s.matches.filterNot { it.match.photo in state.selectedPhotos },
+                        selectedPhotos = emptySet(),
+                    )
+                }
+            } finally {
+                // finally, so a failure can't leave the screen permanently
+                // unable to save or remove anything.
+                updateLoaded { it.copy(operationInFlight = false) }
             }
         }
     }
@@ -133,31 +161,40 @@ class ResultsViewModel @Inject constructor(
 
     private fun saveBatch(targets: List<FaceMatchResult>) {
         if (targets.isEmpty()) return
-        viewModelScope.launch {
-            updateLoaded { it.copy(batchProgress = BatchProgress(0, targets.size)) }
+        // Checked and claimed synchronously, before the coroutine starts.
+        // These entry points are all called from the main thread, so the
+        // check and the claim can't interleave -- which a second tap
+        // arriving while a launch was still pending otherwise would.
+        val state = _uiState.value as? ResultsUiState.Loaded ?: return
+        if (state.operationInFlight) return
+        updateLoaded { it.copy(operationInFlight = true, batchProgress = BatchProgress(0, targets.size)) }
 
+        viewModelScope.launch {
             var savedCount = 0
             var skippedCount = 0
             var failedCount = 0
             var lastSavedUri: Uri? = null
 
-            targets.forEachIndexed { index, match ->
-                updateStatus(match, SaveStatus.Saving)
-                saveMatchedPhoto(match).fold(
-                    onSuccess = { outcome ->
-                        if (outcome.alreadyExisted) skippedCount++ else savedCount++
-                        lastSavedUri = outcome.uri ?: lastSavedUri
-                        updateStatus(match, SaveStatus.Saved)
-                    },
-                    onFailure = { error ->
-                        failedCount++
-                        updateStatus(match, SaveStatus.Failed(error.message ?: "Couldn't save this photo."))
-                    },
-                )
-                updateLoaded { it.copy(batchProgress = BatchProgress(index + 1, targets.size)) }
+            try {
+                targets.forEachIndexed { index, match ->
+                    updateStatus(match, SaveStatus.Saving)
+                    saveMatchedPhoto(match).fold(
+                        onSuccess = { outcome ->
+                            if (outcome.alreadyExisted) skippedCount++ else savedCount++
+                            lastSavedUri = outcome.uri ?: lastSavedUri
+                            updateStatus(match, SaveStatus.Saved)
+                        },
+                        onFailure = { error ->
+                            failedCount++
+                            updateStatus(match, SaveStatus.Failed(error.message ?: "Couldn't save this photo."))
+                        },
+                    )
+                    updateLoaded { it.copy(batchProgress = BatchProgress(index + 1, targets.size)) }
+                }
+            } finally {
+                updateLoaded { it.copy(batchProgress = null, operationInFlight = false, selectedPhotos = emptySet()) }
             }
 
-            updateLoaded { it.copy(batchProgress = null, selectedPhotos = emptySet()) }
             _events.emit(ResultsEvent.BatchSaveCompleted(savedCount, skippedCount, failedCount, lastSavedUri))
         }
     }

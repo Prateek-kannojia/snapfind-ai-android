@@ -6,12 +6,32 @@ import java.io.File
 
 sealed interface ResultsUiState {
     object Loading : ResultsUiState
+
+    /**
+     * Loading the job failed -- a database or MediaStore read threw. Distinct
+     * from a Loaded state with no matches, which is a successful "nothing
+     * matched"; this is "we don't know what you have". Without it the throw
+     * was unhandled and took the app down.
+     */
+    data class Error(val message: String) : ResultsUiState
     data class Loaded(
         val jobId: Long,
         val matches: List<MatchItemState>,
         val selectedPhotos: Set<File> = emptySet(),
         /** Non-null while a batch (download-all / download-selected) save is running. */
         val batchProgress: BatchProgress? = null,
+        /**
+         * True while a save or a removal is running. Saving and removing both
+         * mutate the same photos on disk, so letting a second one start means
+         * two batches fighting over one progress counter, or files being
+         * deleted while they're mid-copy into the gallery. Double-tapping a
+         * button is ordinary behaviour, so this is the normal case, not an
+         * edge one.
+         *
+         * Distinct from [batchProgress], which only covers saves and only
+         * exists to drive the progress bar.
+         */
+        val operationInFlight: Boolean = false,
     ) : ResultsUiState {
         /** Derived, not stored -- deselecting the last photo automatically drops you back to normal browsing, same as Photos/Gmail/Drive, instead of leaving an empty-but-still-"selecting" state behind. */
         val selectionMode: Boolean get() = selectedPhotos.isNotEmpty()

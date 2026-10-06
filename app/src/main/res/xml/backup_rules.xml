@@ -1,13 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?><!--
-   Sample backup rules file; uncomment and customize as necessary.
-   See https://developer.android.com/guide/topics/data/autobackup
-   for details.
-   Note: This file is ignored for devices older than API 31
-   See https://developer.android.com/about/versions/12/backup-restore
+   Pre Android 12 full backup rules. Same exclusions and same reasoning as
+   data_extraction_rules.xml, which covers API 31 and above: face photos and
+   the match database stay on the device, and a 25MB backup quota must not be
+   allowed to restore a database whose photos were dropped.
 -->
 <full-backup-content>
-    <!--
-   <include domain="sharedpref" path="."/>
-   <exclude domain="sharedpref" path="device.xml"/>
--->
+    <exclude domain="database" path="snapfind.db" />
+    <exclude domain="file" path="saved_matches" />
+    <exclude domain="file" path="job_work" />
+    <exclude domain="file" path="facesdk_models" />
 </full-backup-content>

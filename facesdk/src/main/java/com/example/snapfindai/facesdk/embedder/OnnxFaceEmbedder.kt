@@ -67,19 +67,29 @@ internal class OnnxFaceEmbedder(
         validateShape(session.inputNames, outputInfos.size, tensorInfo?.shape?.lastOrNull())
     }
 
+    /**
+     * The input tensor is closed via `use`, not a trailing `close()`.
+     *
+     * It holds native, off-heap memory that the JVM heap never accounts for,
+     * so a throw out of `session.run` used to leak it with no GC pressure to
+     * ever trigger a reclaim. That matters more than it sounds: callers score
+     * photos in a loop and treat a failure as "no face found", so a
+     * systematic cause of throws -- memory pressure, most likely -- would
+     * leak on every photo, and each leak makes the next failure more likely.
+     */
     override suspend fun embed(alignedFace: Bitmap): FaceEmbedding = withContext(Dispatchers.Default) {
-        val tensor = preprocess(alignedFace)
-        var values = FloatArray(0)
-        session.run(mapOf(INPUT_NAME to tensor)).use { result ->
-            for (entry in result) {
-                val out = entry.value as OnnxTensor
-                val buf = out.floatBuffer
-                values = FloatArray(buf.remaining())
-                buf.get(values)
+        preprocess(alignedFace).use { tensor ->
+            var values = FloatArray(0)
+            session.run(mapOf(INPUT_NAME to tensor)).use { result ->
+                for (entry in result) {
+                    val out = entry.value as OnnxTensor
+                    val buf = out.floatBuffer
+                    values = FloatArray(buf.remaining())
+                    buf.get(values)
+                }
             }
+            FaceEmbedding(values)
         }
-        tensor.close()
-        FaceEmbedding(values)
     }
 
     /**
@@ -93,24 +103,31 @@ internal class OnnxFaceEmbedder(
             Bitmap.createScaledBitmap(bitmap, SIZE, SIZE, true)
         }
 
-        val pixels = IntArray(SIZE * SIZE)
-        scaled.getPixels(pixels, 0, SIZE, 0, 0, SIZE, SIZE)
+        // finally, so a throw between creating the copy and finishing with it
+        // -- an allocation failure in here is the realistic one -- still
+        // releases it. Only ever recycles a copy this function made; the
+        // caller's bitmap is not ours to free.
+        val buffer = try {
+            val pixels = IntArray(SIZE * SIZE)
+            scaled.getPixels(pixels, 0, SIZE, 0, 0, SIZE, SIZE)
 
-        val plane = SIZE * SIZE
-        val rArr = FloatArray(plane)
-        val gArr = FloatArray(plane)
-        val bArr = FloatArray(plane)
-        for (i in 0 until plane) {
-            val p = pixels[i]
-            rArr[i] = (((p shr 16) and 0xFF) - 127.5f) / 127.5f
-            gArr[i] = (((p shr 8) and 0xFF) - 127.5f) / 127.5f
-            bArr[i] = ((p and 0xFF) - 127.5f) / 127.5f
+            val plane = SIZE * SIZE
+            val rArr = FloatArray(plane)
+            val gArr = FloatArray(plane)
+            val bArr = FloatArray(plane)
+            for (i in 0 until plane) {
+                val p = pixels[i]
+                rArr[i] = (((p shr 16) and 0xFF) - 127.5f) / 127.5f
+                gArr[i] = (((p shr 8) and 0xFF) - 127.5f) / 127.5f
+                bArr[i] = ((p and 0xFF) - 127.5f) / 127.5f
+            }
+            FloatBuffer.allocate(3 * plane).apply {
+                put(rArr); put(gArr); put(bArr)
+                rewind()
+            }
+        } finally {
+            if (scaled !== bitmap) scaled.recycle()
         }
-        val buffer = FloatBuffer.allocate(3 * plane)
-        buffer.put(rArr); buffer.put(gArr); buffer.put(bArr)
-        buffer.rewind()
-
-        if (scaled !== bitmap) scaled.recycle()
 
         return OnnxTensor.createTensor(env, buffer, longArrayOf(1, 3, SIZE.toLong(), SIZE.toLong()))
     }

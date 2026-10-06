@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+   Debug only. The dormant server path in NetworkModule points at a hardcoded
+   LAN address over plain HTTP, which is fine for talking to a backend running
+   on the development machine and not fine to ship. Declaring it here keeps
+   that workflow available while release builds refuse cleartext traffic.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application android:usesCleartextTraffic="true" />
+
+</manifest>
