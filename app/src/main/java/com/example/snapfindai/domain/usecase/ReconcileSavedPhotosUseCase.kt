@@ -32,7 +32,10 @@ class ReconcileSavedPhotosUseCase @Inject constructor(
         val goneFromGallery = mutableListOf<File>()
 
         val reconciled = matches.map { match ->
-            val inGallery = photoGalleryRepository.displayNameFor(match.photo) in presentInGallery
+            val galleryName = requireNotNull(match.galleryName) {
+                "A persisted match always carries the gallery name it maps to"
+            }
+            val inGallery = galleryName in presentInGallery
             when {
                 inGallery && match.savedAt == null -> {
                     nowInGallery += match.photo

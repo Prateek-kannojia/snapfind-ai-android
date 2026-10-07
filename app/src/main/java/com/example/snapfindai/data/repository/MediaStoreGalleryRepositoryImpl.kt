@@ -29,20 +29,11 @@ class MediaStoreGalleryRepositoryImpl @Inject constructor(
     private val legacyGalleryDir: File
         get() = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), GALLERY_FOLDER)
 
-    /**
-     * Derived from the source file, never from the clock: the same photo
-     * always maps to the same gallery entry, so saving it again is a no-op
-     * instead of a second copy. The path hash keeps two different jobs'
-     * "IMG_1234.jpg" from colliding on one name.
-     */
-    override fun displayNameFor(photo: File): String =
-        "SnapFindAI_${Integer.toHexString(photo.absolutePath.hashCode())}_${photo.name}"
-
-    override suspend fun saveToGallery(photo: File): GallerySaveResult = withContext(Dispatchers.IO) {
+    override suspend fun saveToGallery(photo: File, displayName: String): GallerySaveResult = withContext(Dispatchers.IO) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            saveViaMediaStore(photo)
+            saveViaMediaStore(photo, displayName)
         } else {
-            saveViaLegacyPublicDirectory(photo)
+            saveViaLegacyPublicDirectory(photo, displayName)
         }
     }
 
@@ -62,8 +53,7 @@ class MediaStoreGalleryRepositoryImpl @Inject constructor(
      * Android 10+ (scoped storage): MediaStore insert, no permission needed
      * at all -- an app can always read back and write the entries it owns.
      */
-    private fun saveViaMediaStore(photo: File): GallerySaveResult {
-        val displayName = displayNameFor(photo)
+    private fun saveViaMediaStore(photo: File, displayName: String): GallerySaveResult {
         existingUri(displayName)?.let { return GallerySaveResult(uri = it, alreadyExisted = true) }
 
         val resolver = context.contentResolver
@@ -131,14 +121,14 @@ class MediaStoreGalleryRepositoryImpl @Inject constructor(
      * maxSdkVersion="28") and trigger a media scan so it shows up in the
      * gallery immediately instead of after the next reboot.
      */
-    private fun saveViaLegacyPublicDirectory(photo: File): GallerySaveResult {
+    private fun saveViaLegacyPublicDirectory(photo: File, displayName: String): GallerySaveResult {
         if (!hasLegacyStoragePermission()) {
             throw SecurityException("WRITE_EXTERNAL_STORAGE not granted -- required to save photos on this Android version")
         }
 
         val picturesDir = legacyGalleryDir
         picturesDir.mkdirs()
-        val dest = File(picturesDir, displayNameFor(photo))
+        val dest = File(picturesDir, displayName)
         if (dest.exists()) return GallerySaveResult(uri = null, alreadyExisted = true)
 
         photo.copyTo(dest, overwrite = true)

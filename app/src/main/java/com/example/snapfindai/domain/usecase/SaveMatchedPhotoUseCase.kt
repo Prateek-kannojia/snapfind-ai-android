@@ -22,7 +22,14 @@ class SaveMatchedPhotoUseCase @Inject constructor(
     private val jobHistoryRepository: JobHistoryRepository,
 ) {
     suspend operator fun invoke(match: FaceMatchResult): Result<SaveOutcome> = runCatching {
-        val result = photoGalleryRepository.saveToGallery(match.photo)
+        // Asserted rather than defaulted: anything the user can reach a save
+        // action for came out of storage, where the name is always present.
+        // Inventing one here instead would produce a name that doesn't match
+        // the photo's own, quietly breaking the "already saved" check.
+        val displayName = requireNotNull(match.galleryName) {
+            "A match can only be saved once it has been persisted and named"
+        }
+        val result = photoGalleryRepository.saveToGallery(match.photo, displayName)
         val savedAt = System.currentTimeMillis()
         // Recorded even when the file was already there: the point of the
         // flag is what the gallery gained, while savedAt tracks what the

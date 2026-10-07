@@ -156,11 +156,74 @@ A 500MB, 200+ photo folder surfaced two bugs that no amount of code reading had.
 
 **The job died partway through with `Could not decode temp_selfie.jpg`.** The selfie, the ZIP, and the extracted folder all lived in `cacheDir` — which Android empties under storage pressure, at any time, including mid-operation. Extracting gigabytes *into* cacheDir is itself enough to trigger that, and what it deleted was the selfie we were about to read. `JobHistoryRepositoryImpl` had documented this exact rule for saved matches since it was written; the upload path simply didn't follow it. Working files moved to `filesDir/job_work/`, with explicit cleanup in a `finally` that now also removes the extracted directory — which a failed job used to leave behind permanently.
 
-The trade is that nothing clears `filesDir` for us, so cleanup is deliberate in two places: the `finally` (which also runs on cancellation) handles every normal and failed path, and `prepareJobWorkDir()` reclaims whatever a process killed mid-job left behind.
+The trade is that nothing clears `filesDir` for us, so cleanup is deliberate in two places: the `finally` (which also runs on cancellation) handles every normal and failed path, and a sweep at process start reclaims whatever a process killed mid-job left behind. Where that sweep runs, and why it is *not* at the start of the next job, is in [Running the job outside the app](#running-the-job-outside-the-app-workmanager-and-a-foreground-service) below.
 
 **Failure got cheap, and the selfie is read once.** `prepareSelfie` runs *before* the unzip, so an unusable selfie costs a second rather than minutes of extraction — and it hands back the result instead of discarding it. `matchPhotos` takes that `PreparedSelfie` rather than a `File`, which means the selfie is decoded and embedded exactly once per job **and** the check cannot be skipped by accident: there is no other way to obtain the argument. `PreparedSelfie` is an empty interface in `domain/`, with the implementation's embedding-holding class private to the data layer, so a facesdk type still never crosses the boundary.
 
 **Cancel.** A five-minute job committed by a single tap needs a way out. `UploadViewModel` holds the `Job` and `cancelJob()` cancels it and returns to the picker. Two details make it actually responsive rather than nominal: cancellation is cooperative, so `unzip` became `suspend` purely to call `ensureActive()` between entries (extracting 500MB is otherwise one uninterruptible block, and "cancel" during it would do nothing until the whole archive was written), and `matchPhotos` checks before each photo's decode rather than letting the next suspension point handle it. Progress callbacks are also ignored unless the state is still `Processing`, since a cancel sets `Idle` immediately and an in-flight callback would otherwise flip the screen back.
+
+## Running the job outside the app: WorkManager and a foreground service
+
+A five-minute job in `viewModelScope` is a five-minute job tied to the Activity that started it. Android ranks processes and kills from the bottom when it needs memory, and a coroutine has no standing in that ranking:
+
+| Priority | | Killed |
+|---|---|---|
+| 1 | foreground, visible activity | last |
+| 2 | visible, not focused | |
+| 3 | **running a foreground service** | |
+| 4 | cached (user left the app) | **first** |
+
+Leaving the app drops the process to row 4. And a matching job is the worst possible background citizen: minutes of saturated CPU plus ~96MB allocation spikes per photo, which both lengthens the window and pressures the very memory that triggers the killing. On a device aggressive enough to kill YouTube, being killed was the expected outcome, not the exception — and the job vanished with no error and no trace.
+
+**Two mechanisms, fixing two different things.** A foreground service moves the process from row 4 to row 3, paid for with a non-dismissable notification — visibility in exchange for survival. WorkManager, separately, makes the *request* durable: it records "this work should happen" in its own database, so if the process dies anyway it reschedules on the next app start or after a reboot. One prevents death; the other recovers from it.
+
+`MatchPhotosWorker` is a `CoroutineWorker` built through `HiltWorkerFactory`, which is the only reason it can take the same injected use cases every other layer uses instead of reaching for a service locator. That requires removing WorkManager's automatic initializer in the manifest, or the default factory wins before ours is ever read.
+
+**The UI became a view of the job rather than its owner.** `WorkManager` is now the source of truth for "is a job running and how far along", and `UploadViewModel` maps `WorkInfo` into `UploadUiState`. So leaving the screen tears down the ViewModel and the flow collection while the worker carries on; returning builds a new ViewModel that subscribes to the same unique work and draws the right screen. Nothing is handed over, because nothing was owned.
+
+The side effect is the better feature: **a job can now finish while the app is closed**, and the completion notification is how the result arrives.
+
+Two details that are easy to get wrong. Progress is bridged through a `MutableStateFlow` because the use case reports via a plain callback while `setProgress` and `setForeground` both suspend; notification updates fire only on whole-percent changes, capping them at 100 for a job of any size. And a finished `WorkInfo` is replayed to every new observer until pruned, so terminal states are handled once per work id and then pruned — otherwise reopening the app would re-navigate to Results for a job dealt with days ago.
+
+### One job per request, not per attempt
+
+The job row is created **inside the worker**, keyed by the work request id.
+
+The obvious design is to record the job before enqueuing, and it was wrong twice over. Creating it per *attempt* meant every process kill produced a second row for the same job while the first was orphaned — and WorkManager would never resume that orphan, because from its point of view the work had succeeded. And creating it in the ViewModel needed a three-step sequence (record the job, build the request, link them, enqueue) with a crash gap at every step, plus an enqueue failure that would strand the UI in `Processing` forever.
+
+Keyed on the request, retries converge: an attempt killed mid-run is rescheduled with the same id, finds the same job, and continues it. An enqueue that never happens leaves no row at all.
+
+A worker also checks whether its job still needs work before starting, because an attempt can finish everything and die before reporting success — and redoing the job would then wipe and re-save photos already on disk.
+
+**Completion is one transaction.** As two writes there was a window where a process death left photos recorded against a still-running job, and the retry inserted a *second* set of rows for the same paths. That's duplicate keys in the results grid, which throws, and keeps throwing until app data is cleared. A unique `(jobId, photoPath)` index backs it up so the corruption can't be represented at all.
+
+### A directory per request
+
+Every run owns `job_work/<requestId>/` — its selfie, its ZIP, its extraction — derived on both sides from the request id, so no path is ever passed around and a worker cannot be handed one belonging to another run.
+
+Runs previously shared `job_work/temp_selfie.jpg` and `temp_events.zip`, which was a real race rather than a theoretical one. **Cancelling a work request only records the cancellation; it does not wait for the worker to stop.** So a new run could overwrite a still-unwinding worker's inputs, and that worker's `finally` would then delete the *new* run's files. The window is widest exactly where it's least obvious: relocating hundreds of matched photos has no cancellation checks at all, so it can run for tens of seconds after a cancel.
+
+### Cleaning up what the process never got to
+
+`AbandonedJobSweeper` runs at **process start**, not at the start of the next job. Cleaning up on the way *into* a job put a potentially multi-gigabyte delete on the critical path of the user's tap, and conflated "set up my run" with "recover from an abandoned one".
+
+The decision per leftover is **not a timeout**. "How old is this?" was only ever a proxy for a question that can be answered directly: *is the work request that owns this still live?* If it is, something is going to resume it and its files must be left strictly alone. If it isn't, nothing will ever pick it up.
+
+It's driven by directories rather than database rows, which matters twice. A run cancelled before its worker ever started has a directory but no row, and a row-driven sweep would never see it. And since a new run's request is live by definition, the sweep **structurally cannot touch it** — an earlier version took one liveness snapshot and then emptied the shared directory wholesale, which could destroy the inputs of a job started while it was running.
+
+### Cancelling
+
+`cancelUniqueWork` plus two things that make it responsive rather than nominal. Cancellation is cooperative, so `unzip` is `suspend` purely to check between entries — extracting 500MB is otherwise one uninterruptible block — and `matchPhotos` checks before each photo's decode rather than leaving it to the next suspension point.
+
+Both ViewModels also **rethrow `CancellationException`** before their generic handlers. It extends `Exception`, so a blanket catch reports a deliberate cancel to the user as a failure, and leaves the coroutine looking like it completed normally, which is how structured concurrency quietly breaks. The job's status resolution runs inside `NonCancellable` for the same family of reasons: a suspend database call in an already-cancelled coroutine throws immediately, which would leave a cancelled job looking *interrupted* and get it resumed against the user's wishes.
+
+## Keeping the database changeable
+
+`exportSchema` is on and the JSON under `app/schemas/` is **committed**, which is the part that's easy to skip and expensive to skip. It's the only record of what a shipped schema actually looked like, and without it there is no way to move an installed app forward: Room can't generate an `@AutoMigration` with nothing to diff against, and `MigrationTestHelper` has no starting point to build from.
+
+Without that, the only way to ship a change is `fallbackToDestructiveMigration()` — which deletes the job history this database exists to hold. It's deliberately absent, so a missing migration **throws on open**: loud in development, where it's a two-line fix, rather than quiet in production, where it's data loss.
+
+So changing an entity from here means bumping the version and saying how existing rows reach the new shape. Additive, unambiguous changes — a nullable column, a new table — are declared as an `autoMigrations` entry and Room generates the SQL from the two exported schemas. Anything it can't infer (a rename, a type change, a column computed from other columns) needs a hand-written `Migration` registered in `DatabaseModule`.
 
 ## The dormant server path (kept, not deleted)
 
@@ -276,7 +339,7 @@ sealed interface UploadUiState {
 }
 ```
 
-**`UploadViewModel.kt`** — Unchanged responsibilities: converts picked `Uri`s to `File`s, calls `FindFacesInPhotosUseCase` on `viewModelScope`, updates state based on the result. No code here needed to change when the use case switched from server-calling to on-device — that's the point of the use-case boundary.
+**`UploadViewModel.kt`** — Converts picked `Uri`s to `File`s and enqueues the job; it no longer *runs* one. The job lives in a worker now (see [Running the job outside the app](#running-the-job-outside-the-app-workmanager-and-a-foreground-service)), so this class maps `WorkInfo` into `UploadUiState` rather than owning that state itself. Note what didn't change when the use case went from server-calling to on-device, and again when it went from ViewModel-hosted to worker-hosted: the use case's own signature. That's the point of the boundary.
 
 **`UploadScreen.kt`** — Same two-button-plus-submit flow; the "Processing" copy now reads "Finding matches on your device..." instead of "Uploading...".
 
@@ -455,16 +518,16 @@ The original MVP checklist (Compose UI, Retrofit integration, Hilt DI, Coil imag
 
 **Threading, storage, and cancel (2026-10-03 → 10-04): done.** Verified against a real 500MB / 200+ photo event folder: the whole job had been running on the main thread (unzip, every decode, every file delete) and froze the app; working files had been living in `cacheDir`, which Android emptied mid-job and took the selfie with it. Both fixed, the selfie is now prepared before the unzip and read exactly once per job, and the job can be cancelled. That run completed in under five minutes with no freeze. See [Running a real event folder on device](#running-a-real-event-folder-on-device-threading-storage-and-cancel).
 
+**The database became changeable (2026-10-05): done.** `exportSchema` was off, so nothing recorded what a shipped schema looked like — which meant the only way to ship any change at all was to wipe user data. Schemas are now exported and committed, and destructive fallback is deliberately absent. See [Keeping the database changeable](#keeping-the-database-changeable).
+
+**The job moved out of the app (2026-10-05 → 10-06): done.** A matching job now runs in `MatchPhotosWorker` under a foreground service, so leaving the app no longer ends it and a process kill reschedules rather than loses it. One job row per work request, created inside the worker, so retries converge instead of orphaning rows. A directory per request, which removed a real race where a cancelled worker's cleanup deleted the *next* job's inputs. Completion is one transaction, with a unique `(jobId, photoPath)` index behind it so the duplicate-row corruption it guards against cannot be represented at all. Cleanup of what a killed process never got to runs at process start, correlated against WorkManager rather than against a timeout. See [Running the job outside the app](#running-the-job-outside-the-app-workmanager-and-a-foreground-service).
+
+**Audit follow-ups (2026-10-06): done.** Two external code audits found six issues reasoning alone had missed — the shared-input-file race, the sweeper's own race, non-transactional completion, concurrent save/remove in Results, a download that could hang forever with a decorative Cancel button, and inference resources released only on the success path. All fixed. Backup is configured and off, and cleartext HTTP is debug-only, which makes the README's "photos never leave your phone" claim true rather than aspirational.
+
 **Still open:**
 
-*Data loss risks*
-- **A killed job is lost silently.** The job lives in `viewModelScope`, so it dies with the process — and on a memory-constrained device, five minutes of background CPU work is reliably killed. The user returns to a pristine `Idle` screen: no error, no message, no acknowledgement it ever ran. Needs a persisted job status, a Resume/Discard prompt, and ultimately a foreground service.
-- **Room has no migration strategy.** `DatabaseModule` is a bare `.build()`, so any schema change breaks existing installs — which blocks the job-status column the item above needs.
-- **Backup is enabled but unconfigured.** `allowBackup="true"` with both rule XMLs still IDE templates. The 25MB auto-backup quota means the database can restore while the photos don't, leaving history rows pointing at files that no longer exist.
-
-*Resilience*
-- **WorkManager + foreground service.** At five minutes a job needs to survive backgrounding, and the notification becomes a feature rather than a tax — leave the app, watch progress in the shade. Note this would invalidate the "nothing is in flight at process start" assumption that orphan cleanup currently relies on, so the two have to be designed together.
-- **Checkpoint and resume.** Unusually cheap here, because the extracted photos stay on disk until the job ends: a resumed job needs the ordered photo list, a scored cursor, and the matches so far — not a re-extraction.
+*The next thing to build*
+- **Checkpoint and resume.** WorkManager guarantees the work *eventually completes*, not that an attempt is resumable — it restarts `doWork()` from line one. For a large ZIP on a device that kills aggressively, that isn't slow, it's potentially **non-terminating**: every attempt starts over and is killed before finishing. Resume makes it converge. Unusually cheap here, because the extracted photos stay on disk until the job ends: it needs a scored cursor, a flag for whether extraction finished, and matches written as they're found rather than batched at the end.
 
 *Resource ceilings*
 - **The ZIP is copied, then fully extracted** — roughly 2× the folder's size in free space, and the copy is a 500MB write that buys nothing since it's only ever read sequentially. Streaming entries from the picked URI would remove both. Blocked behind picking a folder directly (below), which would remove the archive entirely.
@@ -472,7 +535,7 @@ The original MVP checklist (Compose UI, Retrofit integration, Hilt DI, Coil imag
 
 *Missing controls*
 - **The user has to zip the folder themselves** — there's no folder picker and no multi-select. The most-felt friction in real use.
-- **Onboarding's Cancel and Pause buttons do nothing** (`onCancel = {}`, `onPause = {}`); the Pause icon's own content description admits it.
+- **Onboarding's Pause button does nothing** (`onPause = {}`); its own content description admits it. Cancel is wired now. Real pause/resume needs HTTP range requests, so the honest short-term options are removing it or disabling it visibly.
 - **No way to delete a job and no retention policy.** Matched photos accumulate in `filesDir` indefinitely with no size shown anywhere.
 - **The no-matches error suggests a control that doesn't exist:** "try a clearer selfie or a higher threshold" — `submitJob` never passes a threshold, so it's always the default. `distance` and `JobEntity.threshold` are both persisted and never surfaced.
 - **Raw exception text reaches the user** — `error.message` goes straight to the UI, so internals like "MediaStore refused to create an entry for IMG_1234.jpg" are user-visible.
@@ -480,8 +543,9 @@ The original MVP checklist (Compose UI, Retrofit integration, Hilt DI, Coil imag
 *Known limitations, accepted*
 - **Gallery-saved photos are duplicated, not aliased.** A saved match exists both as the app's internal `filesDir` copy (what the grid renders) and as a separate MediaStore copy. Android has no API to alias an arbitrary app-private file into MediaStore; the grid could instead load from the gallery `Uri` once saved and drop the internal copy — a storage-efficiency concern, not a correctness one.
 - **Reinstalling loses MediaStore ownership** of previously saved photos, so they read as un-downloaded and re-downloading produces `foo (1).jpg` duplicates.
+- **Gallery dedup keys on a 32-bit hash of an app-private path.** After *clearing app data* (not reinstalling, where ownership is lost anyway) job ids restart at 1, so paths repeat, so the hash repeats while the app can still see the old gallery file. A different photo is then reported as already saved and silently never written. Wants a content digest.
 - **The tick only reconciles on resume** — no `ContentObserver`, so a gallery deletion in split-screen while Results is visible leaves it stale until the screen resumes.
-- **The app module has no tests** while `:facesdk` has eight test classes. Deliberate for now; `prepareSelfie` and `ReconcileSavedPhotosUseCase` are the obvious first seams if that changes.
+- **The app module has no tests** while `:facesdk` has eight test classes and 38 passing cases. Deliberate, but the case against it got stronger: two audits found six bugs in lifecycle code that reading had missed, and the remaining ones are exactly the kind that need the process to die at an exact instant. DAO tests via `Room.inMemoryDatabaseBuilder` (completion atomicity, the unique index actually rejecting duplicates, one job id per repeated `workId`) are the cheap, high-value slice; `AbandonedJobSweeper` needs `work-testing`.
 - **Server-vs-on-device routing is an open question, not a decision.** `FaceMatchRepository` is shaped so a server-backed implementation could plug in later without touching the use case — but whether/when that's worth building is undecided, and the Retrofit path remains wired into Hilt with nothing calling it. See [Cross-project status](../Face_recognition/DEEP_DIVE.md#cross-project-status) in the backend's docs.
 
 Cross-project status (this app + the backend) is tracked in one place to avoid two docs drifting out of sync: see "Cross-project status" in `../Face_recognition/README.md`.

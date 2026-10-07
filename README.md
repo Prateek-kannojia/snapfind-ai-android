@@ -12,7 +12,7 @@ Backend lives in [`../Face_recognition/`](../Face_recognition/) — no longer ca
 
 0. First launch only: a splash screen, then Onboarding downloads the ~16MB face-matching models with a real progress bar (skipped on every launch after)
 1. Pick a selfie + a ZIP of event photos
-2. Tap "Find My Photos" — unzips locally, matches on-device, cancellable while it runs
+2. Tap "Find My Photos" — unzips locally, matches on-device, cancellable while it runs. The job runs in a foreground-service worker, so **leaving the app doesn't kill it**: progress continues in a notification, and a job that finishes while the app is closed delivers its result there
 3. Results screen shows every matched photo in a grid. One download control per mode: `Download N` in the app bar for everything outstanding, a `Download` action in the selection bar after a long-press, and download/remove in the full-screen viewer for a single photo. Tiles themselves show only status — a tick once a photo is in your gallery
 4. Downloads are idempotent — re-downloading never creates a second copy, and the tick is re-checked against your gallery on every return to the screen, so deleting a photo in Photos clears it
 5. Results survive closing the app, and every past job stays reachable as a Recent Jobs card on the Upload screen
@@ -35,12 +35,14 @@ A shared design layer sits under the screens: `ui/theme/` holds spacing, dimensi
 
 ## Tech stack
 
-Kotlin · Jetpack Compose (Material 3, expressive progress indicators) · Hilt (DI) · ONNX Runtime (on-device inference) · Coroutines + StateFlow · Coil (image loading) · Room (job history) · MediaStore (gallery save + saved-state reconciliation) · core-splashscreen (first-run splash) · Clean Architecture · Retrofit (dormant server path, kept not deleted)
+Kotlin · Jetpack Compose (Material 3, expressive progress indicators) · Hilt (DI, incl. `hilt-work`) · WorkManager + foreground service (long-running jobs that outlive the screen) · ONNX Runtime (on-device inference) · Coroutines + StateFlow · Coil (image loading) · Room (job history, with committed schema exports and no destructive fallback) · MediaStore (gallery save + saved-state reconciliation) · core-splashscreen (first-run splash) · Clean Architecture · Retrofit (dormant server path, kept not deleted)
 
 ## Run it
 
 1. Open in Android Studio, let Gradle sync (pulls in `:app` and `:facesdk`)
-2. Run the app — no backend required for face matching. Debug builds bundle the models and work offline immediately; release builds show a one-time Onboarding screen that downloads them (~16MB) with a real progress bar, to keep the shipped APK small — see DEEP_DIVE.md.
+2. Run the app — no backend required for face matching. Release builds show a one-time Onboarding screen that downloads the ~16MB of models with a real progress bar, keeping the shipped APK small — see DEEP_DIVE.md.
+
+> **Known gap:** debug builds *ship* the model assets (`facesdk/src/debug/assets/models/`), but the active repository always loads via `ModelDownloader`, so debug downloads them too and needs network on first run. The asset-loading factories exist in `:facesdk`; nothing wires them up. Either wire them or drop the claim — not yet decided.
 
 ## Project structure
 
@@ -65,10 +67,12 @@ facesdk/           # standalone on-device face-matching SDK, sibling module
 |---|---|---|
 | `filesDir/facesdk_models/` | the two ONNX models (~16MB) | downloaded once, kept |
 | `filesDir/saved_matches/<jobId>/` | matched photos, one folder per job | until the job's matches are removed |
-| `filesDir/job_work/` | scratch: copied selfie, copied ZIP, extraction | cleared at the start and end of every run |
+| `filesDir/job_work/<requestId>/` | scratch for one run: its selfie, its ZIP, its extraction | deleted when that run ends; orphans swept at process start |
 | Room `snapfind.db` | job + match metadata only, never image bytes | until app data is cleared |
 | `Pictures/SnapFindAI/` | photos the user downloaded | survives uninstall — these are theirs |
 
-Deliberately **not** `cacheDir`: the OS empties it under storage pressure, which once deleted a job's selfie mid-run. See DEEP_DIVE.md.
+Deliberately **not** `cacheDir`: the OS empties it under storage pressure, which once deleted a job's selfie mid-run. One directory per work request, not one shared one — cancelling a request doesn't wait for its worker to stop, so a shared directory let one run delete another's files. See DEEP_DIVE.md.
+
+**Nothing here is backed up.** `allowBackup` is off and every path above is named in the backup rules. The data is selfies, photos of people's faces, and a database of who matched whom — so "the photos never leave your phone" has to include Google's cloud backup, which the default behaviour was quietly uploading to. Nothing is lost that can't be rebuilt: models re-download, and a job can be re-run.
 
 Full layer-by-layer explanation, why each pattern was chosen, and code walkthroughs: **[DEEP_DIVE.md](DEEP_DIVE.md)**.
