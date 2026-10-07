@@ -1,9 +1,11 @@
 package com.example.snapfindai.presentation.screens.results
 
 import android.net.Uri
+import android.util.Log
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.snapfindai.domain.model.UserFacingException
 import com.example.snapfindai.domain.model.FaceMatchResult
 import com.example.snapfindai.domain.usecase.GetJobUseCase
 import com.example.snapfindai.domain.usecase.GetLastJobUseCase
@@ -63,7 +65,11 @@ class ResultsViewModel @Inject constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                ResultsUiState.Error("Couldn't load your matches. ${e.message ?: "Please try again."}")
+                // The message is whatever Room or MediaStore threw -- a SQL
+                // fragment or a content Uri -- so it's logged rather than
+                // shown. There's nothing the user could do with it either way.
+                Log.w(TAG, "Couldn't load matches", e)
+                ResultsUiState.Error("Couldn't load your matches. Please try again.")
             }
         }
     }
@@ -186,7 +192,12 @@ class ResultsViewModel @Inject constructor(
                         },
                         onFailure = { error ->
                             failedCount++
-                            updateStatus(match, SaveStatus.Failed(error.message ?: "Couldn't save this photo."))
+                            // Same rule as everywhere else: a message
+                            // written for the user is shown, an IOException's
+                            // own text is logged and replaced.
+                            val reason = (error as? UserFacingException)?.message
+                            if (reason == null) Log.w(TAG, "Couldn't save ${match.galleryName}", error)
+                            updateStatus(match, SaveStatus.Failed(reason ?: "Couldn't save this photo."))
                         },
                     )
                     updateLoaded { it.copy(batchProgress = BatchProgress(index + 1, targets.size)) }
@@ -209,5 +220,9 @@ class ResultsViewModel @Inject constructor(
     private inline fun updateLoaded(transform: (ResultsUiState.Loaded) -> ResultsUiState.Loaded) {
         val current = _uiState.value
         if (current is ResultsUiState.Loaded) _uiState.value = transform(current)
+    }
+
+    private companion object {
+        const val TAG = "ResultsViewModel"
     }
 }

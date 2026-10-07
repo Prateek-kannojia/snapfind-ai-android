@@ -3,11 +3,13 @@ package com.example.snapfindai.work
 import android.content.Context
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.util.Log
 import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import com.example.snapfindai.domain.model.UserFacingException
 import com.example.snapfindai.domain.repository.JobHistoryRepository
 import com.example.snapfindai.domain.usecase.FindFacesInPhotosUseCase
 import com.example.snapfindai.facesdk.FaceMatcher
@@ -102,8 +104,18 @@ class MatchPhotosWorker @AssistedInject constructor(
                     // surfaces is about this input -- an unreadable selfie, no
                     // face in it, a ZIP with no photos -- so running it again
                     // unchanged would fail the same way, slowly.
+                    // Only a message written for the user is shown as one.
+                    // Anything else is a raw exception string -- "ENOSPC (No
+                    // space left on device)", or no message at all -- which
+                    // tells the user nothing and looks like a crash. The real
+                    // one still goes to logcat.
+                    val message = (error as? UserFacingException)?.message
+                    if (message == null) Log.w(TAG, "Matching failed", error)
                     Result.failure(
-                        workDataOf(KEY_ERROR to (error.message ?: "An unknown error occurred."))
+                        workDataOf(
+                            KEY_ERROR to (message
+                                ?: "Something went wrong while matching your photos. Please try again.")
+                        )
                     )
                 },
             )
@@ -131,6 +143,8 @@ class MatchPhotosWorker @AssistedInject constructor(
     }
 
     companion object {
+        private const val TAG = "MatchPhotosWorker"
+
         /** Unique work name: starting a second job replaces the first rather than two running at once. */
         const val WORK_NAME = "match_photos"
 

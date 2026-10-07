@@ -11,6 +11,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.Icon
@@ -50,6 +51,7 @@ fun OnboardingScreen(
         uiState = uiState,
         onStart = { viewModel.startDownload() },
         onCancel = { viewModel.cancelDownload() },
+        onPause = { viewModel.pauseDownload() },
     )
 }
 
@@ -58,6 +60,7 @@ private fun OnboardingContent(
     uiState: OnboardingUiState,
     onStart: () -> Unit,
     onCancel: () -> Unit = {},
+    onPause: () -> Unit = {},
 ) {
     Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
         Box(
@@ -76,7 +79,7 @@ private fun OnboardingContent(
                     uiState = uiState,
                     onStart = onStart,
                     onCancel = onCancel,
-                    onPause = {},
+                    onPause = onPause,
                 )
             }
         }
@@ -117,7 +120,12 @@ private fun Sheet(
     ) {
         when (uiState) {
             OnboardingUiState.ReadyToStart -> ReadyToStartContent(onStart = onStart)
-            is OnboardingUiState.Downloading -> DownloadingContent(progress = uiState.progress, onCancel = onCancel, onPause = onPause)
+            is OnboardingUiState.Downloading ->
+                DownloadingContent(progress = uiState.progress, onCancel = onCancel, onPause = onPause)
+            // Resume is onStart: continuing is the same call, because what
+            // makes it a resume is the partial file, not a different request.
+            is OnboardingUiState.Paused ->
+                DownloadingContent(progress = uiState.progress, onCancel = onCancel, onResume = onStart)
             is OnboardingUiState.Error -> ErrorContent(message = uiState.message, onRetry = onStart)
             OnboardingUiState.Complete -> Unit // LaunchedEffect above navigates away
         }
@@ -150,15 +158,32 @@ private fun ReadyToStartContent(onStart: () -> Unit) {
     }
 }
 
+/**
+ * One composable for both running and paused: the screen is the same screen
+ * with the transfer stopped, and splitting it in two would mean keeping two
+ * copies of the progress ring in step by hand.
+ *
+ * Exactly one of [onPause]/[onResume] is given, which is what says which
+ * state this is.
+ */
 @Composable
-private fun DownloadingContent(progress: Float, onCancel: () -> Unit, onPause: () -> Unit) {
+private fun DownloadingContent(
+    progress: Float,
+    onCancel: () -> Unit,
+    onPause: (() -> Unit)? = null,
+    onResume: (() -> Unit)? = null,
+) {
+    val paused = onResume != null
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(
-            "Downloading · ${(progress * 100).toInt()}%",
+            if (paused) "Paused · ${(progress * 100).toInt()}%"
+            else "Downloading · ${(progress * 100).toInt()}%",
             style = MaterialTheme.typography.titleMedium
         )
         Text(
-            "Please wait until the on-device models finish downloading.",
+            if (paused) "Resume when you're ready -- it picks up from here, " +
+                "not from the beginning."
+            else "Please wait until the on-device models finish downloading.",
             style = MaterialTheme.typography.bodySmall,
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(
@@ -178,8 +203,9 @@ private fun DownloadingContent(progress: Float, onCancel: () -> Unit, onPause: (
                 variant = SnapFindButtonVariant.Tonal
             )
         }
-        PauseButton(
-            onClick = onPause,
+        TransferToggleButton(
+            paused = paused,
+            onClick = onResume ?: onPause ?: {},
             modifier = Modifier
                 .padding(top = SnapFindSpacing.md)
                 .align(Alignment.End),
@@ -200,8 +226,12 @@ private fun ErrorContent(message: String, onRetry: () -> Unit) {
     }
 }
 
+/**
+ * Pause while the download runs, resume while it's stopped -- one control in
+ * one place, rather than two buttons swapping which is hidden.
+ */
 @Composable
-private fun PauseButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun TransferToggleButton(paused: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     FloatingActionButton(
         onClick = onClick,
         modifier = modifier,
@@ -209,7 +239,10 @@ private fun PauseButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
         contentColor = MaterialTheme.colorScheme.onSurface,
         elevation = FloatingActionButtonDefaults.elevation(SnapFindDimens.elevation),
     ) {
-        Icon(Icons.Default.Pause, contentDescription = "Pause (not yet available)")
+        Icon(
+            if (paused) Icons.Default.PlayArrow else Icons.Default.Pause,
+            contentDescription = if (paused) "Resume download" else "Pause download",
+        )
     }
 }
 
@@ -229,6 +262,12 @@ private fun OnboardingDownloadingPreview() {
 @Composable
 private fun OnboardingDownloadingStartPreview() {
     SnapFindAITheme { OnboardingContent(uiState = OnboardingUiState.Downloading(0.04f), onStart = {}) }
+}
+
+@Preview(name = "Paused", showBackground = true)
+@Composable
+private fun OnboardingPausedPreview() {
+    SnapFindAITheme { OnboardingContent(uiState = OnboardingUiState.Paused(0.42f), onStart = {}) }
 }
 
 @Preview(name = "Error", showBackground = true)

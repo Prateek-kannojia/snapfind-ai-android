@@ -66,10 +66,12 @@ facesdk/           # standalone on-device face-matching SDK, sibling module
 | Where | What | Lifetime |
 |---|---|---|
 | `filesDir/facesdk_models/` | the two ONNX models (~16MB) | downloaded once, kept |
-| `filesDir/saved_matches/<jobId>/` | matched photos, one folder per job | until the job's matches are removed |
+| `filesDir/saved_matches/<jobId>/` | matched photos, one folder per job | until the job's matches are removed, or the job is deleted |
 | `filesDir/job_work/<requestId>/` | scratch for one run: its selfie, its ZIP, its extraction | deleted when that run ends; orphans swept at process start |
 | Room `snapfind.db` | job + match metadata only, never image bytes | until app data is cleared |
 | `Pictures/SnapFindAI/` | photos the user downloaded | survives uninstall — these are theirs |
+
+Recent Jobs shows the running total, and long-pressing a job deletes it. Deleting a job only ever touches the two rows above it in this table — its `saved_matches` folder and its database rows. `Pictures/SnapFindAI/` is reached by no path in that code, so photos the user already downloaded stay put; that's structural, not a precaution.
 
 Deliberately **not** `cacheDir`: the OS empties it under storage pressure, which once deleted a job's selfie mid-run. One directory per work request, not one shared one — cancelling a request doesn't wait for its worker to stop, so a shared directory let one run delete another's files. See DEEP_DIVE.md.
 

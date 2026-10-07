@@ -25,7 +25,15 @@ import com.example.snapfindai.ui.theme.SnapFindAITheme
 import com.example.snapfindai.ui.theme.SnapFindDimens
 import com.example.snapfindai.ui.theme.SnapFindSpacing
 
-/** Every pill button in the app (Get Started, Retry, Cancel, Find My Photos, the step buttons) shares this shape, sizing, and elevation rule -- so no two buttons drift onto their own arbitrary dimensions. */
+/**
+ * Every pill button in the app (Get Started, Retry, Cancel, Find My Photos,
+ * the step buttons) shares this shape and sizing -- so no two buttons drift
+ * onto their own arbitrary dimensions.
+ *
+ * Elevation is the one thing the variants don't share: Primary and Tonal are
+ * raised, Outlined deliberately sits flat, since an outline plus a shadow
+ * reads as two competing edges around the same button.
+ */
 enum class SnapFindButtonVariant { Primary, Tonal, Outlined }
 
 private val ButtonContentPadding = PaddingValues(horizontal = 24.dp, vertical = 12.dp)

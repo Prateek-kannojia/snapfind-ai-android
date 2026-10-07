@@ -28,6 +28,11 @@ class ModelProvisioningRepositoryImpl @Inject constructor(
         ) { downloaded, total -> onProgress((1f + fractionOf(downloaded, total)) / fileCount) }
     }
 
+    override suspend fun discardPartialDownloads() {
+        ModelDownloader.discardPartial(context, ModelConfig.DETECTOR_MODEL_FILE_NAME)
+        ModelDownloader.discardPartial(context, ModelConfig.EMBEDDER_MODEL_FILE_NAME)
+    }
+
     private fun fractionOf(downloaded: Long, total: Long): Float =
         if (total > 0) downloaded.toFloat() / total else 0f
 }

@@ -1,6 +1,7 @@
 package com.example.snapfindai.domain.usecase
 
 import com.example.snapfindai.domain.model.FaceMatchResult
+import com.example.snapfindai.domain.model.UserFacingException
 import com.example.snapfindai.domain.repository.FaceMatchRepository
 import com.example.snapfindai.domain.repository.JobHistoryRepository
 import com.example.snapfindai.facesdk.FaceMatcher
@@ -77,7 +78,7 @@ class FindFacesInPhotosUseCase @Inject constructor(
                 // own size, so the figure matches what the check demanded.
                 val neededMb = FileHelper.requiredSpaceToExtract(zipFile) / (1024 * 1024)
                 return@withContext Result.failure(
-                    Exception("Not enough free space. This needs about ${neededMb}MB free to unpack.")
+                    UserFacingException("Not enough free space. This needs about ${neededMb}MB free to unpack.")
                 )
             }
 
@@ -87,7 +88,7 @@ class FindFacesInPhotosUseCase @Inject constructor(
                 maxTotalBytes = zipFile.length() * FileHelper.MAX_EXPANSION_FACTOR,
             ).filter { it.extension.lowercase() in setOf("jpg", "jpeg", "png") }
             if (eventPhotos.isEmpty()) {
-                return@withContext Result.failure(Exception("No photos found in that ZIP file."))
+                return@withContext Result.failure(UserFacingException("No photos found in that ZIP file."))
             }
 
             val matches = faceMatchRepository.matchPhotos(preparedSelfie, eventPhotos, threshold, onProgress)
@@ -113,7 +114,7 @@ class FindFacesInPhotosUseCase @Inject constructor(
             completed = true
             Result.success(persisted)
         } catch (e: NoFaceDetectedException) {
-            Result.failure(Exception("We couldn't find a face in your selfie. Try a clearer, well-lit photo.", e))
+            Result.failure(UserFacingException("We couldn't find a face in your selfie. Try a clearer, well-lit photo.", e))
         } catch (e: CancellationException) {
             // Rethrown, never turned into a Result.failure: CancellationException
             // extends Exception, so the generic catch below would otherwise

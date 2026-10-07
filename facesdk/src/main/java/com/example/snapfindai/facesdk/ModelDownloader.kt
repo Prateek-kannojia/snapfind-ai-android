@@ -7,6 +7,8 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.job
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileOutputStream
+import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
 
@@ -77,16 +79,14 @@ object ModelDownloader {
 
         // Downloaded to a temp name and only renamed once the checksum passes,
         // so an interrupted download can never leave a half-written file under
-        // the real name for a later run to load as a valid model. Deleted on
-        // the way out of a failure or cancellation, rather than leaving ~16MB
-        // of dead weight behind until the next attempt overwrites it.
+        // the real name for a later run to load as a valid model.
+        //
+        // A partial file is deliberately left in place when this fails or is
+        // cancelled: [download] resumes from it, so a pause or a dropped
+        // connection costs the user nothing it doesn't have to. A caller that
+        // means "forget it entirely" says so by calling [discardPartial].
         val tempFile = File(destDir, "$fileName.download")
-        try {
-            download(url, tempFile, onProgress)
-        } catch (e: Throwable) {
-            tempFile.delete()
-            throw e
-        }
+        download(url, tempFile, onProgress)
 
         val actualSha256 = sha256Of(tempFile)
         if (!actualSha256.equals(sha256, ignoreCase = true)) {
@@ -111,8 +111,18 @@ object ModelDownloader {
      * caller cancelling this would keep downloading every remaining byte
      * before anything noticed -- which for a ~16MB model over a slow
      * connection makes a cancel button decorative.
+     *
+     * Picks up where a previous attempt left off: whatever [dest] already
+     * holds is asked for as a byte range rather than downloaded again, so
+     * pausing at 90% and resuming costs the last 10% and not the whole file.
+     * If the server ignores the range -- or anything else about the response
+     * says those bytes can't be trusted to line up -- the file is rewritten
+     * from zero, because appending to a mismatched prefix would produce a
+     * plausible-looking file that fails its checksum for no visible reason.
      */
     private suspend fun download(url: String, dest: File, onProgress: ((Long, Long) -> Unit)?) {
+        val alreadyHave = if (dest.exists()) dest.length() else 0L
+
         // Without these the defaults are unlimited, so a connection that
         // stalls rather than failing leaves the download hanging forever --
         // and the per-chunk cancellation check below never runs, because the
@@ -121,33 +131,73 @@ object ModelDownloader {
             connectTimeout = CONNECT_TIMEOUT_MS
             readTimeout = READ_TIMEOUT_MS
         }
-        val total = connection.contentLengthLong
+        // Ranges are an HTTP idea. Any other scheme has no way to ask for
+        // part of a file, so it simply starts over -- correct, just slower.
+        val http = connection as? HttpURLConnection
+        if (alreadyHave > 0) http?.setRequestProperty("Range", "bytes=$alreadyHave-")
 
-        connection.getInputStream().use { input ->
-            // Timeouts alone would mean a cancel sits unnoticed until the
-            // current read times out. Closing the stream from the outside
-            // when this job is cancelled makes the blocked read throw at
-            // once, which is the only way to interrupt blocking I/O.
-            val closeOnCancel = currentCoroutineContext().job.invokeOnCompletion { cause ->
-                if (cause != null) runCatching { input.close() }
-            }
-            try {
-                dest.outputStream().use { output ->
-                    val buffer = ByteArray(64 * 1024)
-                    var downloaded = 0L
-                    while (true) {
-                        currentCoroutineContext().ensureActive()
-                        val read = input.read(buffer)
-                        if (read == -1) break
-                        output.write(buffer, 0, read)
-                        downloaded += read
-                        onProgress?.invoke(downloaded, total)
-                    }
+        try {
+            // 206 is the only answer that means "here is the rest of it".
+            // A 200 means the range was ignored and the body is the whole
+            // file again, which is a slower but entirely correct outcome.
+            val resuming = alreadyHave > 0 && http?.responseCode == HttpURLConnection.HTTP_PARTIAL
+            val startAt = if (resuming) alreadyHave else 0L
+            val remaining = connection.contentLengthLong
+            // -1 when the server doesn't say; progress reporting treats a
+            // non-positive total as "unknown" rather than dividing by it.
+            val total = if (remaining >= 0) startAt + remaining else -1L
+
+            connection.getInputStream().use { input ->
+                // Timeouts alone would mean a cancel sits unnoticed until the
+                // current read times out. Closing the stream from the outside
+                // when this job is cancelled makes the blocked read throw at
+                // once, which is the only way to interrupt blocking I/O.
+                val closeOnCancel = currentCoroutineContext().job.invokeOnCompletion { cause ->
+                    if (cause != null) runCatching { input.close() }
                 }
-            } finally {
-                closeOnCancel.dispose()
+                try {
+                    // append = resuming, so the one path that keeps existing
+                    // bytes is the one that asked the server to skip them.
+                    FileOutputStream(dest, resuming).use { output ->
+                        val buffer = ByteArray(64 * 1024)
+                        var downloaded = startAt
+                        while (true) {
+                            currentCoroutineContext().ensureActive()
+                            val read = input.read(buffer)
+                            if (read == -1) break
+                            output.write(buffer, 0, read)
+                            downloaded += read
+                            onProgress?.invoke(downloaded, total)
+                        }
+                        // Bytes written here are what a later resume will
+                        // trust, so they have to be on disk and not in a
+                        // buffer that a process death takes with it.
+                        output.flush()
+                        output.fd.sync()
+                    }
+                } finally {
+                    closeOnCancel.dispose()
+                }
             }
+        } finally {
+            http?.disconnect()
         }
+    }
+
+    /**
+     * Throws away any partially downloaded copy of [fileName], so the next
+     * attempt starts from zero instead of resuming.
+     *
+     * The counterpart to the resume behaviour above: a paused download keeps
+     * its bytes, an abandoned one shouldn't sit in the user's storage waiting
+     * for a download that may never be retried.
+     */
+    suspend fun discardPartial(context: Context, fileName: String) =
+        discardPartial(File(context.filesDir, "facesdk_models"), fileName)
+
+    /** Same as the [Context]-based overload, but takes the cache directory directly. */
+    suspend fun discardPartial(destDir: File, fileName: String) {
+        withContext(Dispatchers.IO) { File(destDir, "$fileName.download").delete() }
     }
 
     private fun sha256Of(file: File): String {

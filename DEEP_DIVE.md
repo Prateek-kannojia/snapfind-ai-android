@@ -93,6 +93,18 @@ Downloading ~16MB used to happen silently inside the existing "Processing" step 
 
 **`OnboardingScreen`** (`presentation/screens/onboarding/`) shows the explanation + a "Get Started" button, then a `LinearProgressIndicator` bound to `OnboardingViewModel`'s download progress, then navigates to Upload on completion via a one-shot state (`OnboardingUiState.Complete`) rather than a `StateFlow` value that could re-fire navigation on recomposition. A download failure shows the error with a "Retry" button rather than leaving the user stuck.
 
+**Pause and resume are real, which took a change one layer down.** The screen had a Pause button whose handler was `onPause = {}` — its own content description said "Pause (not yet available)". The reason it was never wired is that pausing is meaningless if the bytes don't survive it: `ModelDownloader` deleted its partial file on any failure or cancellation, so "resume" would have re-downloaded 16MB from zero and the control would have been a lie in a second way.
+
+So the downloader learned to continue. A partial `<name>.download` file is now **kept** rather than deleted, and the next attempt sends `Range: bytes=<what's on disk>-` and appends to it. Three details carry the weight:
+
+- **Only a `206 Partial Content` response is treated as a resume.** A server is free to ignore `Range` and send the whole body with `200 OK`; appending to a prefix that may not line up would build a file that fails its checksum with nothing to point at. A `200` truncates and starts over — slower, still correct.
+- **The bytes are `fsync`'d at the end of the transfer**, because they're what a later resume will trust. Buffered-but-unwritten bytes that a process death took with it would leave the file's length disagreeing with its contents, and `Range` is computed from that length.
+- **Pause keeps the partial; Cancel discards it.** `pauseDownload()` stops the coroutine and parks the progress in `OnboardingUiState.Paused`. `cancelDownload()` is the user saying they don't want it, so it `cancelAndJoin()`s first — `cancel()` only *asks*, and deleting the file out from under a write that hasn't stopped yet lets the writer recreate it — then calls `discardPartialDownloads()`.
+
+Resume is the *same* call as start (`startDownload()`), because what makes it a resume lives in the file on disk, not in anything the ViewModel remembers. The one piece of state it does keep is where the bar was: a resumed download starts the ring at the paused percentage rather than 0%, since the first progress callback can be an entire file away (an already-finished model reports nothing at all) and a bar that jumps backwards to 0% reads as "it threw my download away".
+
+Tested against a stub HTTP server rather than a mock: the existing tests download from `file://` URLs, which have no concept of a byte range, so the resume path needed something that could actually honour one and then say how many bytes it served. The test stops a download part-way, asserts the partial survives, resumes, and asserts the server sent **exactly** the missing bytes — a resume that quietly re-fetched everything would still produce a correct file, so the byte count is the only thing that can tell the difference.
+
 **Why `OnDeviceFaceMatchRepositoryImpl` still calls `ModelDownloader.getOrDownload()` itself, not just relying on Onboarding having already run it:** it's a safety net, not redundant work in the common case — `getOrDownload()` is a no-op cache hit once Onboarding has already fetched both files, but this keeps the matching path correct even if app storage were cleared without a fresh install (Onboarding wouldn't re-run, since that only happens once per install in the current flow).
 
 ## Results persistence, gallery save, and the full-screen viewer
@@ -120,6 +132,12 @@ Two details in that relocation are load-bearing rather than incidental. A job's 
 ## Job history and the shared design system
 
 **Job history.** Every completed job already had its own row; this surfaces them. `GetJobHistoryUseCase` returns `JobSummary` — id, timestamp, match count, and one preview photo — deliberately *not* the full match list, so drawing the Recent Jobs grid doesn't load every job's photos. Tapping a card navigates to `results?jobId=N`, and `ResultsViewModel` loads that job via `GetJobUseCase`; with no id it falls back to `GetLastJobUseCase`, which is the just-finished-a-job flow. The grid is a plain wrapping `Column` of `Row`s rather than a `LazyVerticalGrid`, because a Lazy grid needs its own bounded height to coexist with the screen's outer `verticalScroll` — which would re-introduce the "reserve space whether or not there's content" problem the scrolling layout exists to avoid.
+
+**Deleting a job, and showing what one costs.** A job holds a full-resolution copy of every photo it matched, for as long as the app is installed, and nothing said so anywhere — the first place a user would notice was the system settings screen. Recent Jobs now shows the total next to its heading, and a long-press on any card offers to delete that job.
+
+The confirmation states the whole trade, including the part that matters most: **photos already saved to the gallery stay there.** That isn't a promise the delete has to be careful to keep — it's structural. `deleteJob` touches exactly two things: the job's subdirectory under `filesDir/saved_matches/`, and its row (whose `matched_photos` go with it via `CASCADE`). The gallery is MediaStore under `Pictures`, which this code addresses by no path at all, so a delete *cannot* reach a photo the user chose to keep. The row is deleted last, so a failure leaves a job that still lists and can be deleted again rather than a row pointing at files that are gone.
+
+`JobSummary` gained `sizeBytes`, summed from the files the summary query already lists — one `stat` per file on top of a read that was happening anyway. The same change moved `deleteEmptyJobs` **off** that read path: listing the history used to mutate the database, which is surprising on its own and meant the cleanup only ran when something happened to be looking. It now runs in `removeMatches`, where a job can actually become empty.
 
 **The design system.** `ui/theme/` now carries the constants the screens were otherwise hardcoding: `SnapFindSpacing` for layout rhythm, `SnapFindDimens` for the few dimensions it's legitimate to fix (touch-target floors, badge sizes, upper bounds), `ClayShapes`/`ClayPillShape` for corner treatment, plus a night palette and the bundled font family. The rule being enforced is that a dp literal in a screen is a smell — either it's a visual primitive and belongs in `SnapFindDimens`, or it's layout and should come from constraints.
 
@@ -524,6 +542,8 @@ The original MVP checklist (Compose UI, Retrofit integration, Hilt DI, Coil imag
 
 **Audit follow-ups (2026-10-06): done.** Two external code audits found six issues reasoning alone had missed — the shared-input-file race, the sweeper's own race, non-transactional completion, concurrent save/remove in Results, a download that could hang forever with a decorative Cancel button, and inference resources released only on the success path. All fixed. Backup is configured and off, and cleartext HTTP is debug-only, which makes the README's "photos never leave your phone" claim true rather than aspirational.
 
+**Storage control, real pause, and honest error text (2026-10-07): done.** Three things the user could see but not act on. Recent Jobs now shows how much storage past jobs are holding and a long-press deletes one, with the gallery left untouched by construction rather than by care. Onboarding's Pause button, previously `onPause = {}` with a content description that admitted it, now genuinely pauses: `ModelDownloader` keeps its partial file and resumes with an HTTP `Range` request, treating only a `206` as a resume and `fsync`ing the bytes a later resume will trust — Pause keeps them, Cancel discards them. And raw exception text no longer reaches the screen: a new `UserFacingException` marks the messages written for a person, everything else is logged and replaced with a sentence that's true of all of them. See [Job history](#job-history-and-the-shared-design-system) and [First-run onboarding](#first-run-onboarding-and-the-splash-screen).
+
 **Still open:**
 
 *The next thing to build*
@@ -535,10 +555,7 @@ The original MVP checklist (Compose UI, Retrofit integration, Hilt DI, Coil imag
 
 *Missing controls*
 - **The user has to zip the folder themselves** — there's no folder picker and no multi-select. The most-felt friction in real use.
-- **Onboarding's Pause button does nothing** (`onPause = {}`); its own content description admits it. Cancel is wired now. Real pause/resume needs HTTP range requests, so the honest short-term options are removing it or disabling it visibly.
-- **No way to delete a job and no retention policy.** Matched photos accumulate in `filesDir` indefinitely with no size shown anywhere.
 - **The no-matches error suggests a control that doesn't exist:** "try a clearer selfie or a higher threshold" — `submitJob` never passes a threshold, so it's always the default. `distance` and `JobEntity.threshold` are both persisted and never surfaced.
-- **Raw exception text reaches the user** — `error.message` goes straight to the UI, so internals like "MediaStore refused to create an entry for IMG_1234.jpg" are user-visible.
 
 *Known limitations, accepted*
 - **Gallery-saved photos are duplicated, not aliased.** A saved match exists both as the app's internal `filesDir` copy (what the grid renders) and as a separate MediaStore copy. Android has no API to alias an arbitrary app-private file into MediaStore; the grid could instead load from the gallery `Uri` once saved and drop the internal copy — a storage-efficiency concern, not a correctness one.

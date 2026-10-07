@@ -1,11 +1,13 @@
 package com.example.snapfindai.presentation.screens.onboarding
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.snapfindai.domain.usecase.DownloadModelsUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -22,10 +24,20 @@ class OnboardingViewModel @Inject constructor(
 
     private var downloadJob: Job? = null
 
+    /**
+     * Starts the model download, or continues a paused one -- the same entry
+     * point for both, because the difference lives in the partial file on
+     * disk rather than in anything this has to remember.
+     */
     fun startDownload() {
         if (_uiState.value is OnboardingUiState.Downloading) return
+        // Resuming starts the bar where it stopped rather than at zero: the
+        // first progress callback can be a whole file away (an
+        // already-finished model reports nothing at all), and a bar that
+        // jumps backwards to 0% reads as "it threw my download away".
+        val resumeFrom = (_uiState.value as? OnboardingUiState.Paused)?.progress ?: 0f
         downloadJob = viewModelScope.launch {
-            _uiState.value = OnboardingUiState.Downloading(0f)
+            _uiState.value = OnboardingUiState.Downloading(resumeFrom)
             try {
                 downloadModels { progress ->
                     // Only while still downloading: a cancel drops straight
@@ -43,8 +55,13 @@ class OnboardingViewModel @Inject constructor(
                 // deliberate cancel to the user as a download failure.
                 throw e
             } catch (e: Exception) {
+                // Not e.message: what lands here is a socket error or a
+                // checksum mismatch, both phrased for a developer. The user
+                // gets the one sentence that's true of all of them, and the
+                // actual cause goes to logcat.
+                Log.w(TAG, "Model download failed", e)
                 _uiState.value = OnboardingUiState.Error(
-                    e.message ?: "Couldn't download the face-matching models. Check your connection and try again."
+                    "Couldn't download the face-matching models. Check your connection and try again."
                 )
             }
         }
@@ -61,8 +78,37 @@ class OnboardingViewModel @Inject constructor(
      * leave a partial model behind for a later run to load.
      */
     fun cancelDownload() {
-        downloadJob?.cancel()
+        val stopping = downloadJob
         downloadJob = null
         _uiState.value = OnboardingUiState.ReadyToStart
+        viewModelScope.launch {
+            // Joined before deleting, not just cancelled: cancel() only asks,
+            // and deleting the file out from under a write that hasn't
+            // stopped yet would let the writer recreate it.
+            stopping?.cancelAndJoin()
+            // Unlike a pause, this is the user saying they don't want it --
+            // so the partial download goes too, rather than sitting in their
+            // storage waiting for a retry that may never come.
+            downloadModels.discardPartialDownloads()
+        }
+    }
+
+    /**
+     * Stops the transfer but keeps what it has, so Resume continues from
+     * there instead of paying for the whole 16 MB again.
+     *
+     * The bytes already written are the state -- there's no in-memory
+     * download to hold open -- which is why this can cancel the coroutine
+     * outright and still be a pause rather than a restart.
+     */
+    fun pauseDownload() {
+        val progress = (_uiState.value as? OnboardingUiState.Downloading)?.progress ?: return
+        downloadJob?.cancel()
+        downloadJob = null
+        _uiState.value = OnboardingUiState.Paused(progress)
+    }
+
+    private companion object {
+        const val TAG = "OnboardingViewModel"
     }
 }
