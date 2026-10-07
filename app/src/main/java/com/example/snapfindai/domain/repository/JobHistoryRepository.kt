@@ -53,6 +53,22 @@ interface JobHistoryRepository {
     suspend fun abandonJob(jobId: Long)
 
     /**
+     * Deletes a finished job: its row, its matched photo records, and the
+     * copies of those photos this app was storing.
+     *
+     * **Does not touch the device gallery.** Anything the user downloaded
+     * lives in MediaStore under Pictures, which this reaches by no path at
+     * all -- so a deleted job costs them the record of what matched, never a
+     * photo they chose to keep. That separation is the guarantee, not a
+     * coincidence of the current implementation, and the confirmation the
+     * user sees says so.
+     *
+     * Distinct from [abandonJob], which drops a row for a job that never
+     * produced anything to store.
+     */
+    suspend fun deleteJob(jobId: Long)
+
+    /**
      * Jobs that were started and never finished, oldest first. Since every
      * in-app ending either completes or abandons a job, anything still in
      * this state was interrupted by the process dying — which is the only

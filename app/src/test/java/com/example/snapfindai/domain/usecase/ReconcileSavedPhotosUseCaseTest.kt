@@ -104,6 +104,7 @@ class ReconcileSavedPhotosUseCaseTest {
         override suspend fun needsWork(jobId: Long): Boolean = unused()
         override suspend fun completeJob(jobId: Long, matches: List<FaceMatchResult>): List<FaceMatchResult> = unused()
         override suspend fun abandonJob(jobId: Long) = unused()
+        override suspend fun deleteJob(jobId: Long) = unused()
         override suspend fun abandonedJobs(): List<AbandonedJob> = unused()
         override suspend fun getLastJob(): SavedJob? = unused()
         override suspend fun getJob(jobId: Long): SavedJob? = unused()

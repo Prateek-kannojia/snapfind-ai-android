@@ -49,6 +49,18 @@ class JobHistoryRepositoryImpl @Inject constructor(
         jobDao.deleteJob(jobId)
     }
 
+    override suspend fun deleteJob(jobId: Long) = withContext(Dispatchers.IO) {
+        // Only ever this app's own storage. The gallery is MediaStore under
+        // Pictures, which nothing here addresses -- deleting a job cannot
+        // reach a photo the user chose to keep, by construction rather than
+        // by being careful.
+        File(savedPhotosDir, jobId.toString()).deleteRecursively()
+        // Row last: the photo rows go with it via CASCADE, so if this fails
+        // the job still lists and can be deleted again, rather than becoming
+        // a row pointing at files that are gone.
+        jobDao.deleteJob(jobId)
+    }
+
     override suspend fun abandonedJobs(): List<AbandonedJob> = withContext(Dispatchers.IO) {
         jobDao.getJobsWithStatus(JobStatus.Running.name)
             .map { AbandonedJob(jobId = it.id, workId = it.workId) }
@@ -116,19 +128,22 @@ class JobHistoryRepositoryImpl @Inject constructor(
         return toSavedJob(job)
     }
 
-    override suspend fun getAllJobSummaries(): List<JobSummary> {
-        // Also covers a job that's become empty because the user removed
-        // every one of its matches from Results (see removeMatches below),
-        // not just a stray row from before matches.isEmpty() was handled.
-        // Scoped to completed jobs: a running one has no photos yet.
-        jobDao.deleteEmptyJobs(JobStatus.Complete.name)
-        return jobDao.getAllJobs(JobStatus.Complete.name).map { job ->
+    // A pure read. It used to call deleteEmptyJobs first, which made listing
+    // the history mutate the database -- surprising on its own, and it meant
+    // the cleanup only happened when something happened to be reading. It now
+    // runs where the emptying actually occurs, in removeMatches below.
+    override suspend fun getAllJobSummaries(): List<JobSummary> = withContext(Dispatchers.IO) {
+        jobDao.getAllJobs(JobStatus.Complete.name).map { job ->
             val photos = jobDao.getMatchedPhotosForJob(job.id)
+            val files = photos.map { File(it.photoPath) }
             JobSummary(
                 id = job.id,
                 timestamp = job.timestamp,
                 matchCount = photos.size,
-                previewPhoto = photos.firstOrNull()?.let { File(it.photoPath) },
+                previewPhoto = files.firstOrNull(),
+                // One stat per file, on top of a query this already does, so
+                // the size costs nothing extra worth avoiding.
+                sizeBytes = files.sumOf { it.length() },
             )
         }
     }
@@ -145,6 +160,11 @@ class JobHistoryRepositoryImpl @Inject constructor(
     override suspend fun removeMatches(photos: List<File>) = withContext(Dispatchers.IO) {
         photos.forEach { it.delete() }
         jobDao.deleteMatchedPhotos(photos.map { it.absolutePath })
+        // Removing every match of a job leaves a row with nothing to show, so
+        // the tidy-up belongs here, where that can actually happen -- rather
+        // than on whatever next read happened to trigger it. Scoped to
+        // finished jobs: a running one legitimately has no photos yet.
+        jobDao.deleteEmptyJobs(JobStatus.Complete.name)
     }
 
     /**

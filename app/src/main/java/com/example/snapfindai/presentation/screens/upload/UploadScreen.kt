@@ -74,6 +74,7 @@ fun UploadScreen(
         onSubmit = { viewModel.submitJob(context) },
         onCancel = { viewModel.cancelJob() },
         onOpenJob = onOpenJob,
+        onDeleteJob = { viewModel.deleteJob(it) },
     )
 }
 
@@ -88,7 +89,12 @@ private fun UploadContent(
     onSubmit: () -> Unit,
     onCancel: () -> Unit,
     onOpenJob: (Long) -> Unit,
+    onDeleteJob: (Long) -> Unit,
 ) {
+    // Which card's delete is being confirmed, if any. Held here rather than
+    // per card so only one dialog can ever be open.
+    var jobPendingDeletion by remember { mutableStateOf<JobSummary?>(null) }
+
     Scaffold(containerColor = MaterialTheme.colorScheme.background) { paddingValues ->
         val processingState = uiState as? UploadUiState.Processing
         if (processingState != null) {
@@ -140,12 +146,75 @@ private fun UploadContent(
 
             if (jobHistory.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(SnapFindSpacing.section))
-                Text("Recent Jobs", style = MaterialTheme.typography.titleMedium)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Recent Jobs", style = MaterialTheme.typography.titleMedium)
+                    // The cost of keeping these, stated where the user can see
+                    // it. Each job holds a full-resolution copy of every photo
+                    // it matched, and without a number on screen there is no
+                    // reason to ever delete one -- the first place anybody
+                    // would notice is the system settings screen.
+                    Text(
+                        formatBytes(jobHistory.sumOf { it.sizeBytes }),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Spacer(modifier = Modifier.height(SnapFindSpacing.sm))
-                JobHistoryGrid(jobs = jobHistory, onOpenJob = onOpenJob)
+                JobHistoryGrid(
+                    jobs = jobHistory,
+                    onOpenJob = onOpenJob,
+                    onLongPressJob = { jobPendingDeletion = it },
+                )
             }
         }
     }
+
+    jobPendingDeletion?.let { job ->
+        DeleteJobDialog(
+            job = job,
+            onConfirm = {
+                jobPendingDeletion = null
+                onDeleteJob(job.id)
+            },
+            onDismiss = { jobPendingDeletion = null },
+        )
+    }
+}
+
+/**
+ * Spells out what a delete does and does not reach. The distinction is the
+ * whole point: the app's own copies go, and anything the user downloaded is
+ * theirs and stays in their gallery. Saying so here is what makes the action
+ * safe to offer at all.
+ */
+@Composable
+private fun DeleteJobDialog(job: JobSummary, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Delete this job?") },
+        text = {
+            Text(
+                "This removes ${job.matchCount} matched photo${if (job.matchCount == 1) "" else "s"} " +
+                    "from the app, along with the record of what matched, and frees " +
+                    "${formatBytes(job.sizeBytes)}.\n\n" +
+                    "Photos you've already saved to your gallery stay there."
+            )
+        },
+        confirmButton = { TextButton(onClick = onConfirm) { Text("Delete") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+/** Rounded to whole units: this is a sense of scale, not an accounting figure. */
+private fun formatBytes(bytes: Long): String = when {
+    bytes >= 1024L * 1024 * 1024 -> "%.1f GB".format(bytes / (1024.0 * 1024 * 1024))
+    bytes >= 1024L * 1024 -> "${bytes / (1024 * 1024)} MB"
+    bytes > 0 -> "${bytes / 1024} KB"
+    else -> "0 KB"
 }
 
 /** "Step N" label + its button, sharing one column so the two steps line up regardless of button label length. */
@@ -167,12 +236,21 @@ private fun StepColumn(modifier: Modifier = Modifier, label: String, button: @Co
  * the point to reintroduce a properly height-constrained Lazy grid.
  */
 @Composable
-private fun JobHistoryGrid(jobs: List<JobSummary>, onOpenJob: (Long) -> Unit) {
+private fun JobHistoryGrid(
+    jobs: List<JobSummary>,
+    onOpenJob: (Long) -> Unit,
+    onLongPressJob: (JobSummary) -> Unit,
+) {
     Column(verticalArrangement = Arrangement.spacedBy(SnapFindSpacing.grid)) {
         jobs.chunked(2).forEach { rowJobs ->
             Row(horizontalArrangement = Arrangement.spacedBy(SnapFindSpacing.grid)) {
                 rowJobs.forEach { job ->
-                    JobHistoryCard(modifier = Modifier.weight(1f), job = job, onClick = { onOpenJob(job.id) })
+                    JobHistoryCard(
+                        modifier = Modifier.weight(1f),
+                        job = job,
+                        onClick = { onOpenJob(job.id) },
+                        onLongClick = { onLongPressJob(job) },
+                    )
                 }
                 if (rowJobs.size == 1) {
                     Spacer(modifier = Modifier.weight(1f))
@@ -253,10 +331,16 @@ private fun MatchingProgress(
 }
 
 @Composable
-private fun JobHistoryCard(modifier: Modifier = Modifier, job: JobSummary, onClick: () -> Unit) {
+private fun JobHistoryCard(
+    modifier: Modifier = Modifier,
+    job: JobSummary,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+) {
     // Portrait-leaning, not square -- matches the approved design's Recent
-    // Jobs card shape.
-    SnapFindPhotoCard(modifier = modifier, aspectRatio = 0.85f, onClick = onClick) {
+    // Jobs card shape. Long-press to delete, the same gesture Results uses to
+    // start selecting, rather than a delete affordance on every card.
+    SnapFindPhotoCard(modifier = modifier, aspectRatio = 0.85f, onClick = onClick, onLongClick = onLongClick) {
         if (job.previewPhoto != null) {
             AsyncImage(
                 model = job.previewPhoto,
@@ -300,9 +384,12 @@ private fun formatJobTimestamp(timestamp: Long): String =
 // That's expected here, not a bug.
 
 private val previewJobs = listOf(
-    JobSummary(id = 1, timestamp = System.currentTimeMillis(), matchCount = 12, previewPhoto = File("preview.jpg")),
-    JobSummary(id = 2, timestamp = System.currentTimeMillis() - 86_400_000, matchCount = 4, previewPhoto = null),
-    JobSummary(id = 3, timestamp = System.currentTimeMillis() - 172_800_000, matchCount = 1, previewPhoto = null),
+    // Sizes are realistic rather than round: a matched photo is a
+    // full-resolution copy, so a dozen of them is tens of megabytes. The
+    // preview is where the total's formatting gets checked.
+    JobSummary(id = 1, timestamp = System.currentTimeMillis(), matchCount = 12, previewPhoto = File("preview.jpg"), sizeBytes = 31_457_280),
+    JobSummary(id = 2, timestamp = System.currentTimeMillis() - 86_400_000, matchCount = 4, previewPhoto = null, sizeBytes = 10_485_760),
+    JobSummary(id = 3, timestamp = System.currentTimeMillis() - 172_800_000, matchCount = 1, previewPhoto = null, sizeBytes = 2_621_440),
 )
 
 @Preview(name = "Idle - empty", showBackground = true)
@@ -314,7 +401,7 @@ private fun UploadIdleEmptyPreview() {
             jobHistory = emptyList(),
             hasSelfie = false,
             hasZip = false,
-            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {}, onDeleteJob = {},
         )
     }
 }
@@ -328,7 +415,7 @@ private fun UploadIdleReadyPreview() {
             jobHistory = previewJobs,
             hasSelfie = true,
             hasZip = true,
-            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {}, onDeleteJob = {},
         )
     }
 }
@@ -342,7 +429,7 @@ private fun UploadErrorPreview() {
             jobHistory = previewJobs,
             hasSelfie = true,
             hasZip = true,
-            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {}, onDeleteJob = {},
         )
     }
 }
@@ -356,7 +443,7 @@ private fun UploadMatchingIndeterminatePreview() {
             jobHistory = emptyList(),
             hasSelfie = true,
             hasZip = true,
-            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {}, onDeleteJob = {},
         )
     }
 }
@@ -370,7 +457,7 @@ private fun UploadMatchingProgressPreview() {
             jobHistory = emptyList(),
             hasSelfie = true,
             hasZip = true,
-            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {}, onDeleteJob = {},
         )
     }
 }
@@ -384,7 +471,7 @@ private fun UploadIdleDarkPreview() {
             jobHistory = previewJobs,
             hasSelfie = false,
             hasZip = false,
-            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {}, onDeleteJob = {},
         )
     }
 }
@@ -398,7 +485,7 @@ private fun UploadSmallPhonePreview() {
             jobHistory = previewJobs,
             hasSelfie = true,
             hasZip = true,
-            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {}, onDeleteJob = {},
         )
     }
 }
@@ -412,7 +499,7 @@ private fun UploadLargePhonePreview() {
             jobHistory = previewJobs,
             hasSelfie = true,
             hasZip = true,
-            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {}, onDeleteJob = {},
         )
     }
 }

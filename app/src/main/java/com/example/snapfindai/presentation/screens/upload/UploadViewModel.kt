@@ -9,6 +9,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.example.snapfindai.domain.model.JobSummary
+import com.example.snapfindai.domain.usecase.DeleteJobUseCase
 import com.example.snapfindai.domain.usecase.GetJobHistoryUseCase
 import com.example.snapfindai.utils.FileHelper
 import com.example.snapfindai.work.MatchPhotosWorker
@@ -40,6 +41,7 @@ import javax.inject.Inject
 @HiltViewModel
 class UploadViewModel @Inject constructor(
     private val getJobHistory: GetJobHistoryUseCase,
+    private val deleteJob: DeleteJobUseCase,
     private val workManager: WorkManager,
 ) : ViewModel() {
 
@@ -214,6 +216,17 @@ class UploadViewModel @Inject constructor(
     fun resetState() {
         _uiState.value = UploadUiState.Idle
         refreshHistory() // picks up newly-saved/removed jobs when returning from Results
+    }
+
+    /**
+     * Deletes a past job and the photos this app was storing for it. The
+     * user's gallery is untouched -- see [DeleteJobUseCase].
+     */
+    fun deleteJob(jobId: Long) {
+        viewModelScope.launch {
+            deleteJob.invoke(jobId)
+            refreshHistory()
+        }
     }
 
     private fun refreshHistory() {
