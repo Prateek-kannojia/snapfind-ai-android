@@ -52,6 +52,21 @@ class UploadViewModel @Inject constructor(
     private val _jobHistory = MutableStateFlow<List<JobSummary>>(emptyList())
     val jobHistory: StateFlow<List<JobSummary>> = _jobHistory.asStateFlow()
 
+    // Held here rather than in the composable, for two reasons. The screen's
+    // own `remember` was lost on a configuration change, so rotating the
+    // phone silently threw away what the user had picked. And nothing cleared
+    // it when a job ended, so after cancelling one the step buttons still read
+    // "Selected" for files the user had just abandoned.
+    private val _selfieUri = MutableStateFlow<Uri?>(null)
+    val selfieUri: StateFlow<Uri?> = _selfieUri.asStateFlow()
+
+    private val _zipUri = MutableStateFlow<Uri?>(null)
+    val zipUri: StateFlow<Uri?> = _zipUri.asStateFlow()
+
+    fun onSelfiePicked(uri: Uri?) { _selfieUri.value = uri }
+
+    fun onZipPicked(uri: Uri?) { _zipUri.value = uri }
+
     // One-shot: navigating off of `uiState == Success` breaks the moment
     // Results is left via the system back gesture instead of its in-app back
     // button -- that path pops straight through Compose Navigation's own back
@@ -93,6 +108,9 @@ class UploadViewModel @Inject constructor(
 
                     WorkInfo.State.SUCCEEDED -> onceFor(info.id) {
                         val matchCount = info.outputData.getInt(MatchPhotosWorker.KEY_MATCH_COUNT, 0)
+                        // That job is over, so the picks that produced it are
+                        // no longer a setup for anything.
+                        clearPickedFiles()
                         refreshHistory()
                         if (matchCount == 0) {
                             _uiState.value = UploadUiState.Error("No matches found. Try a clearer selfie.")
@@ -102,6 +120,9 @@ class UploadViewModel @Inject constructor(
                         }
                     }
 
+                    // Picks are deliberately kept on failure: the user most
+                    // likely wants to swap one of them, and clearing both
+                    // would make them start over to change one.
                     WorkInfo.State.FAILED -> onceFor(info.id) {
                         _uiState.value = UploadUiState.Error(
                             info.outputData.getString(MatchPhotosWorker.KEY_ERROR)
@@ -130,7 +151,9 @@ class UploadViewModel @Inject constructor(
         workManager.pruneWork()
     }
 
-    fun submitJob(context: Context, selfieUri: Uri, zipUri: Uri) {
+    fun submitJob(context: Context) {
+        val selfieUri = _selfieUri.value ?: return
+        val zipUri = _zipUri.value ?: return
         _uiState.value = UploadUiState.Processing()
 
         viewModelScope.launch {
@@ -179,7 +202,13 @@ class UploadViewModel @Inject constructor(
      */
     fun cancelJob() {
         _uiState.value = UploadUiState.Idle
+        clearPickedFiles()
         workManager.cancelUniqueWork(MatchPhotosWorker.WORK_NAME)
+    }
+
+    private fun clearPickedFiles() {
+        _selfieUri.value = null
+        _zipUri.value = null
     }
 
     fun resetState() {

@@ -31,8 +31,7 @@ class FindFacesInPhotosUseCase @Inject constructor(
      * what didn't match, relocating what did -- so it owns its dispatcher
      * rather than trusting the caller's. It used to run on whatever thread
      * called it, which was the ViewModel's main-thread scope.
-     */
-    /**
+     *
      * [jobId] is created by the caller, once per background work request, and
      * handed in rather than created here. A retried attempt therefore works
      * on the same job instead of starting a new one -- which is what stopped
@@ -73,10 +72,12 @@ class FindFacesInPhotosUseCase @Inject constructor(
             // Checked before extracting rather than discovered during it: a
             // folder too big for the device otherwise fails minutes in, with
             // a raw I/O error and the storage already full.
-            if (!FileHelper.hasRoomToExtract(zipFile, extractDir)) {
-                val needed = zipFile.length() / (1024 * 1024)
+            if (!FileHelper.hasRoomToExtract(zipFile)) {
+                // Reports what is actually required rather than the archive's
+                // own size, so the figure matches what the check demanded.
+                val neededMb = FileHelper.requiredSpaceToExtract(zipFile) / (1024 * 1024)
                 return@withContext Result.failure(
-                    Exception("Not enough free space. This needs roughly ${needed}MB free to unpack.")
+                    Exception("Not enough free space. This needs about ${neededMb}MB free to unpack.")
                 )
             }
 

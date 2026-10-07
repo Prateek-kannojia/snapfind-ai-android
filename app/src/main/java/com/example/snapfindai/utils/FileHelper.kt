@@ -116,9 +116,20 @@ object FileHelper {
      * photos afterwards. Checked up front so a folder that cannot fit fails
      * in a second with something actionable, rather than part-way through
      * extraction with a raw I/O error and a half-filled device.
+     *
+     * Measured from the ZIP itself, which exists, rather than from the
+     * directory about to receive it, which does not yet. `usableSpace`
+     * answers 0 for a path that names no partition, so asking a
+     * not-yet-created directory reported no free space on any device and
+     * rejected every job. Both live under filesDir, so it is the same
+     * partition either way.
      */
-    fun hasRoomToExtract(zipFile: File, destDir: File): Boolean =
-        destDir.usableSpace >= (zipFile.length() * EXTRACTION_SPACE_MARGIN).toLong()
+    fun hasRoomToExtract(zipFile: File): Boolean =
+        zipFile.usableSpace >= requiredSpaceToExtract(zipFile)
+
+    /** Bytes that need to be free for [zipFile] to unpack, margin included. */
+    fun requiredSpaceToExtract(zipFile: File): Long =
+        (zipFile.length() * EXTRACTION_SPACE_MARGIN).toLong()
 
     /** How far an archive may expand beyond its own size before it stops looking like photos. */
     const val MAX_EXPANSION_FACTOR = 4

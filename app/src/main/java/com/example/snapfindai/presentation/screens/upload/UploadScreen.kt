@@ -45,16 +45,18 @@ fun UploadScreen(
     val jobHistory by viewModel.jobHistory.collectAsState()
     val context = LocalContext.current
 
-    var selfieUri by remember { mutableStateOf<Uri?>(null) }
-    var zipUri by remember { mutableStateOf<Uri?>(null) }
+    // Owned by the ViewModel, so a rotation doesn't discard what was picked
+    // and ending a job can clear it -- see UploadViewModel.
+    val selfieUri by viewModel.selfieUri.collectAsState()
+    val zipUri by viewModel.zipUri.collectAsState()
 
     val selfieLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
-    ) { uri: Uri? -> selfieUri = uri }
+    ) { uri: Uri? -> viewModel.onSelfiePicked(uri) }
 
     val zipLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
-    ) { uri: Uri? -> zipUri = uri }
+    ) { uri: Uri? -> viewModel.onZipPicked(uri) }
 
     // One-shot: fires exactly once per successful job, not derived from
     // uiState -- see UploadViewModel.navigateToResults for why.
@@ -69,11 +71,7 @@ fun UploadScreen(
         hasZip = zipUri != null,
         onChooseSelfie = { selfieLauncher.launch("image/*") },
         onChooseZip = { zipLauncher.launch("application/zip") },
-        onSubmit = {
-            if (selfieUri != null && zipUri != null) {
-                viewModel.submitJob(context, selfieUri!!, zipUri!!)
-            }
-        },
+        onSubmit = { viewModel.submitJob(context) },
         onCancel = { viewModel.cancelJob() },
         onOpenJob = onOpenJob,
     )
