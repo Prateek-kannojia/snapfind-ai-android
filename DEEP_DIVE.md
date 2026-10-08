@@ -570,8 +570,6 @@ The original MVP checklist (Compose UI, Retrofit integration, Hilt DI, Coil imag
 
 **Still open:**
 
-*The next thing to build*
-
 *Resource ceilings*
 - **The ZIP is copied, then fully extracted** — roughly 2× the folder's size in free space, and the copy is a 500MB write that buys nothing since it's only ever read sequentially. Streaming entries from the picked URI would remove both. Blocked behind picking a folder directly (below), which would remove the archive entirely.
 - **Peak memory is ~96MB per photo**, since the EXIF rotation holds a second full bitmap alongside the first. Per-photo, not cumulative, so folder size doesn't change it. Downsampling was tried and **rejected** — event photos have small faces in large frames, and reducing resolution measurably cost matching accuracy. A single-allocation decode (`ImageDecoder`, API 28+) would halve the peak without touching resolution, but it replaces a decoder validated pixel-for-pixel against `cv2.imread`, so it needs the alignment harness re-run.
@@ -585,7 +583,7 @@ The original MVP checklist (Compose UI, Retrofit integration, Hilt DI, Coil imag
 - **Reinstalling loses MediaStore ownership** of previously saved photos, so they read as un-downloaded and re-downloading produces `foo (1).jpg` duplicates.
 - **Gallery dedup keys on a 32-bit hash of an app-private path.** After *clearing app data* (not reinstalling, where ownership is lost anyway) job ids restart at 1, so paths repeat, so the hash repeats while the app can still see the old gallery file. A different photo is then reported as already saved and silently never written. Wants a content digest.
 - **The tick only reconciles on resume** — no `ContentObserver`, so a gallery deletion in split-screen while Results is visible leaves it stale until the screen resumes.
-- **The app module has no tests** while `:facesdk` has eight test classes and 38 passing cases. Deliberate, but the case against it got stronger: two audits found six bugs in lifecycle code that reading had missed, and the remaining ones are exactly the kind that need the process to die at an exact instant. DAO tests via `Room.inMemoryDatabaseBuilder` (completion atomicity, the unique index actually rejecting duplicates, one job id per repeated `workId`) are the cheap, high-value slice; `AbandonedJobSweeper` needs `work-testing`.
+- **`AbandonedJobSweeper` is the one untested piece of the job lifecycle.** The app module now has 25 tests across four classes (`:facesdk` has 41 across eight): DAO guards via `Room.inMemoryDatabaseBuilder`, the gallery reconcile, the free-space precheck and resumable extraction, and resumption itself. The sweeper is what's left, and it needs `work-testing` to stand up a fake WorkManager, since its whole decision is a liveness question put to it.
 - **Server-vs-on-device routing is an open question, not a decision.** `FaceMatchRepository` is shaped so a server-backed implementation could plug in later without touching the use case — but whether/when that's worth building is undecided, and the Retrofit path remains wired into Hilt with nothing calling it. See [Cross-project status](../Face_recognition/DEEP_DIVE.md#cross-project-status) in the backend's docs.
 
 Cross-project status (this app + the backend) is tracked in one place to avoid two docs drifting out of sync: see "Cross-project status" in `../Face_recognition/README.md`.
