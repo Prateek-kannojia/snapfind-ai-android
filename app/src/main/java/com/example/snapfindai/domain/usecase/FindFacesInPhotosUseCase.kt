@@ -1,6 +1,8 @@
 package com.example.snapfindai.domain.usecase
 
+import com.example.snapfindai.domain.model.EventPhoto
 import com.example.snapfindai.domain.model.FaceMatchResult
+import com.example.snapfindai.domain.model.PhotoMatch
 import com.example.snapfindai.domain.model.UserFacingException
 import com.example.snapfindai.domain.repository.FaceMatchRepository
 import com.example.snapfindai.domain.repository.JobHistoryRepository
@@ -12,6 +14,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.IOException
+import java.util.zip.ZipEntry
+import java.util.zip.ZipFile
 import javax.inject.Inject
 
 // Use case owns all the business logic for this feature:
@@ -74,105 +79,90 @@ class FindFacesInPhotosUseCase @Inject constructor(
         var completed = false
 
         // Named by the job it belongs to, so leftover working directories can
-        // later be matched against the jobs that own them.
-        val extractDir = File(zipFile.parentFile, "event_photos_$jobId")
+        // later be matched against the jobs that own them. Only the photos
+        // that actually match are ever written here -- a few dozen, where the
+        // whole archive used to be unpacked.
+        val matchesDir = File(zipFile.parentFile, "matches_$jobId")
         try {
             // Where a previous attempt of this same job got to, if there was
             // one. Read once, up front: everything after this is this
             // attempt's own progress, which it already knows.
             val checkpoint = jobHistoryRepository.checkpointFor(jobId)
 
-            // Before the expensive part, not after: unzipping a real event
+            // Before the expensive part, not after: scoring a real event
             // folder takes minutes, and a selfie with no detectable face in
             // it should cost the user one second to find out, not all of that.
             // The result is carried to matchPhotos below rather than thrown
-            // away, so the selfie is read and embedded exactly once per job.
-            // (Once per *attempt*, strictly -- an embedding is a second of
-            // work and not worth persisting to save on a resume.)
+            // away, so the selfie is read and embedded exactly once per
+            // attempt.
             val preparedSelfie = faceMatchRepository.prepareSelfie(selfieFile)
 
-            if (!checkpoint.extractionComplete) {
-                // Checked before extracting rather than discovered during it: a
-                // folder too big for the device otherwise fails minutes in, with
-                // a raw I/O error and the storage already full.
-                if (!FileHelper.hasRoomToExtract(zipFile)) {
-                    // Reports what is actually required rather than the archive's
-                    // own size, so the figure matches what the check demanded.
-                    val neededMb = FileHelper.requiredSpaceToExtract(zipFile) / (1024 * 1024)
-                    return@withContext Result.failure(
-                        UserFacingException("Not enough free space. This needs about ${neededMb}MB free to unpack.")
-                    )
+            // ZipFile, not ZipInputStream: it reads the archive's central
+            // directory, so the entry list is known at once and any entry can
+            // be read directly. A sequential stream would have to be re-read
+            // from the start to reach photo 214 on every resumed attempt.
+            ZipFile(zipFile).use { archive ->
+                // Sorted by entry name, which is what makes the scored cursor
+                // mean anything: it is a count into this order, so the order
+                // has to be identical on every attempt at this job.
+                val eventPhotos = eventPhotosIn(archive)
+                if (eventPhotos.isEmpty()) {
+                    return@withContext Result.failure(UserFacingException("No photos found in that ZIP file."))
                 }
 
-                // Skips entries a previous attempt already wrote, so this
-                // costs only what is actually left to extract.
-                FileHelper.unzip(
-                    zipFile = zipFile,
-                    destDir = extractDir,
-                    maxTotalBytes = zipFile.length() * FileHelper.MAX_EXPANSION_FACTOR,
-                )
-                // Only now is the directory known to hold the whole archive.
-                // Recorded before any scoring, because scoring a subset would
-                // report "no photos of you here" from half an event.
-                jobHistoryRepository.markExtractionComplete(jobId)
+                // Worked out for the whole list up front, so a given photo
+                // gets the same filename on every attempt. Disambiguating
+                // only the photos this attempt happens to score would hand
+                // the same name to two different photos after a resume.
+                val fileNames = workFileNames(eventPhotos)
+                matchesDir.mkdirs()
+
+                // Coerced because the two can legitimately disagree: a job
+                // whose row outlived its working directory reads as further
+                // along than there are photos to score.
+                val alreadyScored = checkpoint.scoredCount.coerceAtMost(eventPhotos.size)
+
+                // Reported before any work, so a resumed job's progress picks
+                // up where it stopped. Without it the bar sits at 0% until the
+                // first photo of this attempt is scored, which on a
+                // nearly-finished job looks like the work was thrown away.
+                onProgress?.invoke(alreadyScored, eventPhotos.size)
+
+                val found = mutableListOf<FaceMatchResult>()
+                faceMatchRepository.matchPhotos(
+                    selfie = preparedSelfie,
+                    eventPhotos = eventPhotos.drop(alreadyScored),
+                    threshold = threshold,
+                ) { scoredThisAttempt, match ->
+                    // Written to disk before the checkpoint names it, so a row
+                    // can never point at a file that was never finished.
+                    val kept = match?.let { keep(it, matchesDir, fileNames) }
+                    val scored = alreadyScored + scoredThisAttempt
+                    // The checkpoint, written per photo. A few milliseconds
+                    // against a second or more of scoring, and it is what
+                    // turns "the process died" from "start again" into "carry
+                    // on from here".
+                    jobHistoryRepository.recordScored(jobId, scored, kept)
+                    if (kept != null) found += kept
+                    onProgress?.invoke(scored, eventPhotos.size)
+                }
+
+                val matches = checkpoint.matches + found
+
+                // Nothing to persist -- a job with zero matches shouldn't leave
+                // a row behind for the history grid to show as an empty card.
+                if (matches.isEmpty()) {
+                    return@withContext Result.success(emptyList())
+                }
+
+                // Relocates matched photos out of the working directory into
+                // stable storage and marks the job complete -- the returned list
+                // points at the new locations, which is what lets the finally
+                // below delete the working directory wholesale.
+                val persisted = jobHistoryRepository.completeJob(jobId, matches)
+                completed = true
+                Result.success(persisted)
             }
-
-            // Listed from the directory on both paths rather than taken from
-            // unzip's return value, so a first attempt and a resumed one build
-            // the identical list -- which is the whole basis of the scored
-            // cursor meaning anything.
-            val eventPhotos = eventPhotosIn(extractDir)
-            if (eventPhotos.isEmpty()) {
-                return@withContext Result.failure(UserFacingException("No photos found in that ZIP file."))
-            }
-
-            // Coerced because the two can legitimately disagree: once scoring
-            // finishes, the non-matching photos are deleted, so a kill at that
-            // moment leaves a cursor past the end of a now-shorter list.
-            // Dropping that many still yields nothing left to score, which is
-            // the right answer.
-            val alreadyScored = checkpoint.scoredCount.coerceAtMost(eventPhotos.size)
-
-            // Reported before any work, so a resumed job's progress picks up
-            // where it stopped. Without it the bar sits at 0% until the first
-            // photo of this attempt is scored, which on a nearly-finished job
-            // looks like the work was thrown away.
-            onProgress?.invoke(alreadyScored, eventPhotos.size)
-
-            val matches = checkpoint.matches + faceMatchRepository.matchPhotos(
-                selfie = preparedSelfie,
-                eventPhotos = eventPhotos.drop(alreadyScored),
-                threshold = threshold,
-            ) { scoredThisAttempt, match ->
-                val scored = alreadyScored + scoredThisAttempt
-                // The checkpoint, written per photo. It costs a few
-                // milliseconds against a second or more of scoring, and it is
-                // what turns "the process died" from "start again" into "carry
-                // on from here".
-                jobHistoryRepository.recordScored(jobId, scored, match)
-                onProgress?.invoke(scored, eventPhotos.size)
-            }
-
-            // Free the disk space of everything that didn't match before
-            // saveJob starts copying -- the whole extracted folder goes in
-            // the finally below either way, but on a nearly-full device the
-            // copy needs that room now, not afterwards.
-            val matchedFiles = matches.map { it.photo }.toSet()
-            eventPhotos.filterNot { it in matchedFiles }.forEach { it.delete() }
-
-            // Nothing to persist -- a job with zero matches shouldn't leave
-            // a row behind for the history grid to show as an empty card.
-            if (matches.isEmpty()) {
-                return@withContext Result.success(emptyList())
-            }
-
-            // Relocates matched photos out of the working directory into
-            // stable storage and marks the job complete -- the returned list
-            // points at the new locations, which is what lets the finally
-            // below delete the working directory wholesale.
-            val persisted = jobHistoryRepository.completeJob(jobId, matches)
-            completed = true
-            Result.success(persisted)
         } catch (e: NoFaceDetectedException) {
             Result.failure(UserFacingException("We couldn't find a face in your selfie. Try a clearer, well-lit photo.", e))
         } catch (e: CancellationException) {
@@ -203,7 +193,7 @@ class FindFacesInPhotosUseCase @Inject constructor(
             // leave the entire extracted event folder behind.
             selfieFile.delete()
             zipFile.delete()
-            extractDir.deleteRecursively()
+            matchesDir.deleteRecursively()
         }
     }
 
@@ -213,20 +203,93 @@ class FindFacesInPhotosUseCase @Inject constructor(
      * The sort is the load-bearing part. A scored cursor is a count into this
      * list, so if the order varied between attempts the cursor would point at
      * a different photo each time -- silently skipping some photos and
-     * re-scoring others, which is worse than not resuming at all.
-     * `listFiles()` promises no order whatsoever, and ZIP entry order isn't
-     * available once the archive has been unpacked and thrown away.
-     *
-     * Walks the tree rather than the top level because an event archive is
-     * usually organised into folders ("day1/", "ceremony/"). Half-written
-     * `.part` files from an interrupted extraction are excluded by the same
-     * extension filter that excludes anything else that isn't a photo.
+     * re-scoring others, which is worse than not resuming at all. Entry order
+     * inside an archive is whatever the tool that built it chose, so it is
+     * sorted here rather than trusted.
      */
-    private fun eventPhotosIn(extractDir: File): List<File> =
-        extractDir.walkTopDown()
-            .filter { it.isFile && it.extension.lowercase() in PHOTO_EXTENSIONS }
-            .sortedBy { it.relativeTo(extractDir).invariantSeparatorsPath }
+    private fun eventPhotosIn(archive: ZipFile): List<EventPhoto> =
+        archive.entries().asSequence()
+            .filter { !it.isDirectory && it.name.substringAfterLast('.', "").lowercase() in PHOTO_EXTENSIONS }
+            .map { ZipEntryPhoto(archive, it) }
+            .sortedBy { it.name }
             .toList()
+
+    /**
+     * The filename each photo gets if it is kept, decided for the whole list
+     * at once.
+     *
+     * Two properties this has to have together. **Unique**, because an
+     * archive organised into folders ("day1/IMG_001.jpg", "day2/IMG_001.jpg")
+     * flattens into one directory here, and without that the second photo
+     * overwrites the first. And **the same on every attempt**, because a
+     * resumed attempt scores only part of the list: disambiguating as it goes
+     * would number the photos differently depending on where it started, and
+     * hand one photo's name to another.
+     *
+     * Deciding it for every photo up front gives both, since the list itself
+     * is identical on every attempt. The name is also the one the user
+     * eventually sees in their gallery, which is why it keeps the photo's own
+     * filename rather than being an index.
+     */
+    private fun workFileNames(photos: List<EventPhoto>): Map<String, String> {
+        val taken = mutableSetOf<String>()
+        return photos.associate { photo -> photo.name to uniqueName(baseNameOf(photo.name), taken) }
+    }
+
+    /**
+     * Just the filename, never a path. An entry name comes from the archive,
+     * which came from wherever the user got it, so "../../evil.jpg" is a
+     * thing it can say -- dropping every path segment is what stops that
+     * naming a file outside this job's directory, rather than a check that
+     * has to be remembered.
+     */
+    private fun baseNameOf(entryName: String): String {
+        val base = entryName.substringAfterLast('/').substringAfterLast('\\')
+        return if (base.isBlank() || base == "." || base == "..") "photo.jpg" else base
+    }
+
+    /**
+     * The original filename when it's free, and only disambiguated when it
+     * genuinely clashes -- "IMG_001.jpg" then "IMG_001-2.jpg".
+     */
+    private fun uniqueName(name: String, taken: MutableSet<String>): String {
+        if (taken.add(name)) return name
+
+        val base = name.substringBeforeLast('.', name)
+        val extension = name.substringAfterLast('.', "")
+        val suffix = if (extension.isEmpty()) "" else ".$extension"
+        var attempt = 2
+        while (true) {
+            val candidate = "$base-$attempt$suffix"
+            if (taken.add(candidate)) return candidate
+            attempt++
+        }
+    }
+
+    /**
+     * Writes a matched photo out of the archive, which is the only thing a
+     * job writes at all now.
+     *
+     * The bytes are re-read rather than carried through the matcher: it is
+     * one entry out of a local file, and it keeps the photo's *original*
+     * bytes, not the capped-and-rotated bitmap that was scored. What ends up
+     * in the user's gallery is the photo they took.
+     */
+    private fun keep(match: PhotoMatch, matchesDir: File, fileNames: Map<String, String>): FaceMatchResult {
+        val dest = File(matchesDir, fileNames.getValue(match.photo.name))
+        try {
+            FileHelper.writeAtomically(dest, match.photo.readBytes())
+        } catch (e: IOException) {
+            throw UserFacingException("There wasn't enough room to save the photos that matched.", e)
+        }
+        return FaceMatchResult(photo = dest, distance = match.distance)
+    }
+
+    /** One entry of an open archive, read only if and when it is scored. */
+    private class ZipEntryPhoto(private val archive: ZipFile, private val entry: ZipEntry) : EventPhoto {
+        override val name: String get() = entry.name
+        override fun readBytes(): ByteArray = archive.getInputStream(entry).use { it.readBytes() }
+    }
 
     private companion object {
         val PHOTO_EXTENSIONS = setOf("jpg", "jpeg", "png")

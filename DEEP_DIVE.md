@@ -19,7 +19,7 @@ After large events (weddings, parties, conferences), photographers distribute ma
 2. User picks a selfie from their gallery (the face to search for)
 3. User picks a ZIP file containing event photos
 4. User taps **Find My Photos**
-5. App unzips the archive into local cache, and runs on-device face detection + matching against every extracted photo
+5. App reads each photo straight out of the archive and runs on-device face detection + matching against it
 6. App navigates to the **Results Screen** showing matched photos in a grid
 7. User can scroll through, tap any photo to open it full-screen and swipe between matches, long-press to enter selection mode (batch remove or batch download), or download all/a single photo straight to the system gallery
 8. Closing and reopening the app still shows the last job's results — nothing is lost on restart
@@ -33,16 +33,18 @@ No upload, no polling loop — steps 5-6 happen on the phone's CPU, typically in
 `FindFacesInPhotosUseCase` (domain layer) owns the sequence:
 
 ```
-1. FileHelper.unzip(zipFile, extractDir)
-   → extracts every photo from the ZIP into app cache, guarded against
-     "zip slip" (an entry trying to write outside extractDir)
+1. ZipFile(zipFile) → entries, filtered to photos, sorted by entry name
+   → read from the archive's central directory, so the list is known at
+     once and any entry can be read directly. Sorted because the scored
+     cursor is a count into this order (see Resuming, below)
 
 2. FaceMatchRepository.matchPhotos(selfie, eventPhotos, threshold)
    → the actual matching, delegated to OnDeviceFaceMatchRepositoryImpl
-     (data layer), which wraps :facesdk's FaceMatchEngine
+     (data layer), which wraps :facesdk's FaceMatchEngine. Each photo's
+     bytes are read when its turn comes and dropped straight after
 
-3. Non-matched extracted photos are deleted
-   → only what the Results screen will actually display stays on disk
+3. A photo that matches is written out, and nothing else ever is
+   → only what the Results screen will display touches the disk at all
 ```
 
 Inside `OnDeviceFaceMatchRepositoryImpl`, photos are **not** batch-decoded into memory as a list of Bitmaps — the SDK's `embedSelfie()`/`scoreEventPhoto()` primitives are called one photo at a time, each Bitmap recycled immediately after scoring. A batch of dozens of full-resolution phone photos held in memory simultaneously risks OOM; a job's worth of on-device history has never needed more than one or two decoded photos alive at once with this approach.
@@ -172,13 +174,13 @@ A 500MB, 200+ photo folder surfaced two bugs that no amount of code reading had.
 
 **The app froze for the entire job.** `viewModelScope` is `Dispatchers.Main.immediate`, and nothing below `submitJob` switched dispatcher — so unzipping the folder, every full-resolution decode and EXIF rotation, hundreds of file deletes, and the relocation of matched photos *all ran on the UI thread*. The irony is that `:facesdk` was already careful, hopping to `Dispatchers.Default` inside `detect` and `embed`; it was the decoding around those calls that never moved. Matching now owns `Dispatchers.Default` (it's CPU- and allocation-bound: a 12MP photo is a 48MB `ARGB_8888` bitmap, and the rotation copy briefly holds a second one), and the file work owns `Dispatchers.IO`.
 
-**The job died partway through with `Could not decode temp_selfie.jpg`.** The selfie, the ZIP, and the extracted folder all lived in `cacheDir` — which Android empties under storage pressure, at any time, including mid-operation. Extracting gigabytes *into* cacheDir is itself enough to trigger that, and what it deleted was the selfie we were about to read. `JobHistoryRepositoryImpl` had documented this exact rule for saved matches since it was written; the upload path simply didn't follow it. Working files moved to `filesDir/job_work/`, with explicit cleanup in a `finally` that now also removes the extracted directory — which a failed job used to leave behind permanently.
+**The job died partway through with `Could not decode temp_selfie.jpg`.** The selfie, the ZIP, and (at the time) the extracted folder all lived in `cacheDir` — which Android empties under storage pressure, at any time, including mid-operation. Extracting gigabytes *into* cacheDir is itself enough to trigger that, and what it deleted was the selfie we were about to read. `JobHistoryRepositoryImpl` had documented this exact rule for saved matches since it was written; the upload path simply didn't follow it. Working files moved to `filesDir/job_work/`, with explicit cleanup in a `finally` that removes the whole of a run's directory — which a failed job used to leave behind permanently.
 
 The trade is that nothing clears `filesDir` for us, so cleanup is deliberate in two places: the `finally` (which also runs on cancellation) handles every normal and failed path, and a sweep at process start reclaims whatever a process killed mid-job left behind. Where that sweep runs, and why it is *not* at the start of the next job, is in [Running the job outside the app](#running-the-job-outside-the-app-workmanager-and-a-foreground-service) below.
 
-**Failure got cheap, and the selfie is read once.** `prepareSelfie` runs *before* the unzip, so an unusable selfie costs a second rather than minutes of extraction — and it hands back the result instead of discarding it. `matchPhotos` takes that `PreparedSelfie` rather than a `File`, which means the selfie is decoded and embedded exactly once per job **and** the check cannot be skipped by accident: there is no other way to obtain the argument. `PreparedSelfie` is an empty interface in `domain/`, with the implementation's embedding-holding class private to the data layer, so a facesdk type still never crosses the boundary.
+**Failure got cheap, and the selfie is read once.** `prepareSelfie` runs *before* any scoring, so an unusable selfie costs a second rather than minutes of work — and it hands back the result instead of discarding it. `matchPhotos` takes that `PreparedSelfie` rather than a `File`, which means the selfie is decoded and embedded exactly once per job **and** the check cannot be skipped by accident: there is no other way to obtain the argument. `PreparedSelfie` is an empty interface in `domain/`, with the implementation's embedding-holding class private to the data layer, so a facesdk type still never crosses the boundary.
 
-**Cancel.** A five-minute job committed by a single tap needs a way out. `UploadViewModel` holds the `Job` and `cancelJob()` cancels it and returns to the picker. Two details make it actually responsive rather than nominal: cancellation is cooperative, so `unzip` became `suspend` purely to call `ensureActive()` between entries (extracting 500MB is otherwise one uninterruptible block, and "cancel" during it would do nothing until the whole archive was written), and `matchPhotos` checks before each photo's decode rather than letting the next suspension point handle it. Progress callbacks are also ignored unless the state is still `Processing`, since a cancel sets `Idle` immediately and an in-flight callback would otherwise flip the screen back.
+**Cancel.** A five-minute job committed by a single tap needs a way out. `UploadViewModel` holds the `Job` and `cancelJob()` cancels it and returns to the picker. Cancellation is cooperative, so `matchPhotos` calls `ensureActive()` before each photo's read and decode — the most expensive step in the loop — rather than letting the next suspension point handle it. Progress callbacks are also ignored unless the state is still `Processing`, since a cancel sets `Idle` immediately and an in-flight callback would otherwise flip the screen back.
 
 ## Running the job outside the app: WorkManager and a foreground service
 
@@ -217,7 +219,7 @@ A worker also checks whether its job still needs work before starting, because a
 
 ### A directory per request
 
-Every run owns `job_work/<requestId>/` — its selfie, its ZIP, its extraction — derived on both sides from the request id, so no path is ever passed around and a worker cannot be handed one belonging to another run.
+Every run owns `job_work/<requestId>/` — its selfie, its ZIP, and the photos out of that archive that matched — derived on both sides from the request id, so no path is ever passed around and a worker cannot be handed one belonging to another run.
 
 Runs previously shared `job_work/temp_selfie.jpg` and `temp_events.zip`, which was a real race rather than a theoretical one. **Cancelling a work request only records the cancellation; it does not wait for the worker to stop.** So a new run could overwrite a still-unwinding worker's inputs, and that worker's `finally` would then delete the *new* run's files. The window is widest exactly where it's least obvious: relocating hundreds of matched photos has no cancellation checks at all, so it can run for tens of seconds after a cancel.
 
@@ -235,25 +237,43 @@ WorkManager's guarantee is that the work *eventually completes*. It is not that 
 
 **Three pieces of state, and the reason each is shaped the way it is.**
 
-`jobs.extractionComplete` says whether the extraction directory holds the whole archive. It has to be its own flag because the directory cannot answer the question: a half-extracted folder looks exactly like a finished one, and scoring the subset would report a confident, wrong answer — "no photos of you in this event", from half the event.
+**Two pieces of state** — it was three, until the change in [Nothing is unpacked](#nothing-is-unpacked-the-write-that-bought-nothing) deleted the third along with the phase it guarded.
 
-`jobs.scoredCount` is how many photos have been scored. It is a count into a list, which makes the list's **order** load-bearing rather than cosmetic. `listFiles()` promises no order at all, and ZIP entry order is gone once the archive has been unpacked, so a cursor into "whatever order the directory came back in" would point at a different photo on every attempt — silently skipping some and re-scoring others, which is worse than not resuming. So the photo list is built the same way on both paths: walk the extraction directory, filter to photo extensions, sort by relative path. The first attempt doesn't even use `unzip`'s return value, precisely so the two paths cannot drift apart.
+`jobs.scoredCount` is how many photos have been scored. It is a count into a list, which makes the list's **order** load-bearing rather than cosmetic. Entry order inside an archive is whatever the tool that built it chose, and a directory listing promises no order at all — so a cursor into "whatever order came back" would point at a different photo on every attempt, silently skipping some and re-scoring others, which is worse than not resuming. The list is therefore always built the same way: the archive's photo entries, sorted by entry name.
 
 `pending_matches` holds the matches found so far. It's a second table rather than early rows in `matched_photos` because the two mean different things — a matched photo is a result in stable storage with a content-derived gallery name, and one of these is a note to a future attempt pointing into a working directory. Merging them would have meant a nullable `galleryName` on a type whose whole invariant is having one, plus result rows for jobs with no results. The second table costs one entity; the merge costs an invariant. They're cleared in the same transaction that writes the real results, and CASCADE takes them when a job is abandoned or deleted.
 
 **The write order is the interesting part.** `checkpointScored` records the match *then* advances the cursor, in one transaction. A process killed between the two leaves the photo looking un-scored, so the next attempt scores it again and writes the same match again — which the unique `(jobId, photoPath)` index absorbs as a no-op. The other order would mean a photo marked done whose match was never written, and **a match silently missing from the results is the one failure the user cannot detect.** Of the two ways to be wrong, redundant work is the recoverable one.
 
-**Extraction resumes too**, which needed a change to how entries are written: each goes to `<name>.part` and is renamed into place, so a file present under its real name is complete *by construction*, and an entry whose file already exists is skipped. Writing directly would leave a truncated file after a kill that is indistinguishable from a finished one — the next attempt would skip it and hand a half-written photo to the decoder. The expansion guard counts skipped files' bytes too, so resuming can't be a way around a limit that stopped the first attempt.
+**A matched photo is on disk before the checkpoint names it**, and it is written under a temporary name then renamed, so a file under its real name is complete *by construction*. Writing directly would leave a truncated photo after a kill that every later check accepts as present.
 
 **Progress is seeded before any work.** A resumed job reports its checkpoint to the UI immediately, because otherwise the bar sits at 0% until this attempt's first photo is scored — and on a job that was 90% done, that reads as "it threw my work away".
 
 The cost of all this is one small database write per photo, against a second or more of decoding and scoring per photo. The invariant it buys: `FindFacesInPhotosUseCase` is safe to call repeatedly for the same job, and every call either advances it or finishes it — never redoing and never losing work.
 
-Resumption is tested rather than reasoned about, because a resume and a restart produce the *same results* and differ only in the work done. The fake matcher therefore records which photos it was handed: one test asserts a first attempt writes a checkpoint per photo (and records extraction as complete before scoring anything), another seeds the checkpoint a killed attempt would have left and asserts only the remaining photos are scored, and a third makes the archive unreadable to prove a completed extraction is never repeated. A real process kill can't be simulated in-process — it is precisely the absence of unwinding, and any exception still runs the `finally` that cleans up what a kill leaves behind — so the two halves are driven through the same repository API from both sides.
+Resumption is tested rather than reasoned about, because a resume and a restart produce the *same results* and differ only in the work done. The fake matcher therefore records which photos it was handed: one test asserts a first attempt writes a checkpoint per photo, another seeds the checkpoint a killed attempt would have left and asserts only the remaining photos are scored, and a third asserts that a cursor past the end of the list scores nothing. A real process kill can't be simulated in-process — it is precisely the absence of unwinding, and any exception still runs the `finally` that cleans up what a kill leaves behind — so the two halves are driven through the same repository API from both sides.
+
+## Nothing is unpacked: the write that bought nothing
+
+A 500MB archive used to cost about **1GB of writes**, and the same again in peak storage. Two writes, two different causes, and only one of them was buying anything.
+
+The **copy of the ZIP** into the job's own directory exists because of the *picker contract*, not the archive. `GetContent()` hands back a read grant scoped to the Activity, and by the time a worker runs — possibly after a process death — that grant can be gone. It buys more than durable access, too: a content Uri is not a file, and can be backed by Google Drive, in which case reading it is a network download of something that may not be on the phone at all. One copy makes everything after it local, seekable, re-readable and unchanging, which is what lets a resumed attempt start instantly instead of re-downloading.
+
+The **extraction** bought nothing. Every photo was written to disk so that it could be read once, decoded, and — for the 95% that don't match — deleted again.
+
+So it is gone. `ZipFile` (not `ZipInputStream`) reads the archive's central directory, which gives the entry list at once *and* random access to any entry, so each photo's bytes are read when its turn comes and dropped straight after. Only the photos that match are written anywhere.
+
+Three things fell out of that, and they are the interesting part:
+
+- **`extractionComplete` went with it.** That flag existed for exactly one reason — a half-extracted folder is indistinguishable from a finished one — and with no extraction there is no partially-done directory to misread. Deleting a phase deleted the state that guarded it.
+- **The free-space precheck went too.** It demanded 1.3× the archive because extraction would definitely write that much. Writes are now proportional to *matches*, which cannot be known up front — and a check that cannot be computed is worse than none, because it rejects jobs that would have succeeded. Which is exactly what it did on a real device.
+- **The zip-slip guard moved rather than disappeared.** Entry names are still attacker-controlled, and are now used to *name* a kept photo, so every path segment is dropped. Those names are also worked out for the whole list up front, because a resumed attempt scores only part of it: disambiguating as it goes would number photos differently depending on where it started, and hand one photo's name to another.
+
+`ZipInputStream` straight off the picked Uri would remove the copy as well, but it is sequential-only: every resumed attempt would re-read the archive from the start to reach photo 214, and on a Drive-backed Uri that is a second download. That trade only pays off alongside a folder picker, where there is no archive at all.
 
 ### Cancelling
 
-`cancelUniqueWork` plus two things that make it responsive rather than nominal. Cancellation is cooperative, so `unzip` is `suspend` purely to check between entries — extracting 500MB is otherwise one uninterruptible block — and `matchPhotos` checks before each photo's decode rather than leaving it to the next suspension point.
+`cancelUniqueWork` plus what makes it responsive rather than nominal. Cancellation is cooperative, so `matchPhotos` checks before each photo's read and decode — the expensive step, and the one worth not spending on a job the user has called off — rather than leaving it to the next suspension point.
 
 Both ViewModels also **rethrow `CancellationException`** before their generic handlers. It extends `Exception`, so a blanket catch reports a deliberate cancel to the user as a failure, and leaves the coroutine looking like it completed normally, which is how structured concurrency quietly breaks. The job's status resolution runs inside `NonCancellable` for the same family of reasons: a suspend database call in an already-cancelled coroutine throws immediately, which would leave a cancelled job looking *interrupted* and get it resumed against the user's wishes.
 
@@ -335,7 +355,7 @@ The rule: each layer can only talk to the layer below it. The UI never directly 
 
 **`SnapFindApi.kt` / `JobRepositoryImpl.kt`** — The dormant server path. Still real, compiling code — see [The dormant server path](#the-dormant-server-path-kept-not-deleted) — just not in the active call graph.
 
-**`FileHelper.kt`** — Two jobs: `uriToFile()` copies a picked `Uri`'s content into a real cache `File` (Android doesn't let you read a `Uri` directly the way file APIs expect); `unzip()` extracts a ZIP into a directory, rejecting any entry whose resolved path would land outside the target directory ("zip slip" — a zip is user-supplied input, worth the same suspicion as a downloaded one).
+**`FileHelper.kt`** — Two jobs: `uriToFile()` copies a picked `Uri`'s content into a real `File` (Android doesn't let you read a `Uri` directly the way file APIs expect); `writeAtomically()` writes a file under a temporary name and renames it into place, so a file under its real name is complete by construction rather than possibly truncated by a process kill.
 
 ### Domain Layer
 
@@ -362,7 +382,7 @@ interface JobRepository {
 }
 ```
 
-**`FindFacesInPhotosUseCase.kt`** — Owns the on-device sequence end to end: unzip → `FaceMatchRepository.matchPhotos()` → delete the non-matched extracted photos → clean up the temp selfie/zip files in a `finally` block regardless of success or failure. Catches `NoFaceDetectedException` (thrown by the SDK when the selfie itself has no detectable face) specifically, to surface a clear user-facing message instead of a raw exception string. Defaults `threshold` to `FaceMatcher.DEFAULT_THRESHOLD` (0.60, `:facesdk`'s own constant) rather than a second hardcoded copy of that number.
+**`FindFacesInPhotosUseCase.kt`** — Owns the on-device sequence end to end: read the job's checkpoint → list the archive's photo entries in a fixed order → `FaceMatchRepository.matchPhotos()` over the ones not yet scored, writing out each match as it is found → clean up the temp selfie/zip files in a `finally` block regardless of success or failure. Catches `NoFaceDetectedException` (thrown by the SDK when the selfie itself has no detectable face) specifically, to surface a clear user-facing message instead of a raw exception string. Defaults `threshold` to `FaceMatcher.DEFAULT_THRESHOLD` (0.60, `:facesdk`'s own constant) rather than a second hardcoded copy of that number.
 
 Returns `Result<List<FaceMatchResult>>` — same reasoning as before: the ViewModel gets a success value or a caught exception, never a crash.
 
@@ -373,7 +393,7 @@ Returns `Result<List<FaceMatchResult>>` — same reasoning as before: the ViewMo
 ```kotlin
 sealed interface UploadUiState {
     object Idle       : UploadUiState   // nothing happening, form visible
-    object Processing : UploadUiState   // unzip + on-device matching in progress
+    object Processing : UploadUiState   // on-device matching in progress
     data class Success(val matches: List<FaceMatchResult>) : UploadUiState
     data class Error(val message: String) : UploadUiState
 }
@@ -458,7 +478,7 @@ SnapFindAI/                             # this Gradle project
 │   │   │   ├── PhotoGalleryRepository.kt      # saveToGallery(photo): Uri? (ACTIVE)
 │   │   │   └── JobRepository.kt               # The dormant contract
 │   │   └── usecase/
-│   │       ├── FindFacesInPhotosUseCase.kt   # unzip -> match -> persist -> cleanup, on-device
+│   │       ├── FindFacesInPhotosUseCase.kt   # checkpoint -> match from archive -> persist -> cleanup
 │   │       ├── CheckModelsReadyUseCase.kt    # backs AppStartupViewModel's splash-gating check
 │   │       ├── DownloadModelsUseCase.kt      # backs OnboardingViewModel's download + progress
 │   │       ├── GetLastJobUseCase.kt          # restores the last saved job on app relaunch
@@ -473,7 +493,7 @@ SnapFindAI/                             # this Gradle project
 │   │       └── viewer/     # PhotoViewerScreen.kt (HorizontalPager) + PhotoViewerViewModel.kt
 │   ├── ui/theme/                     # Material 3 color, typography, theme setup
 │   ├── utils/
-│   │   ├── FileHelper.kt             # Uri->File, plus ZIP extraction
+│   │   ├── FileHelper.kt             # Uri->File, plus atomic file writes
 │   │   └── DownloadNotificationHelper.kt  # posts the batch-save-completed system notification
 │   ├── spike/                        # facesdk validation harness — see facesdk/README below
 │   ├── MainActivity.kt               # Single activity, hosts Compose navigation
@@ -566,12 +586,14 @@ The original MVP checklist (Compose UI, Retrofit integration, Hilt DI, Coil imag
 
 **Storage control, real pause, and honest error text (2026-10-07): done.** Three things the user could see but not act on. Recent Jobs now shows how much storage past jobs are holding and a long-press deletes one, with the gallery left untouched by construction rather than by care. Onboarding's Pause button, previously `onPause = {}` with a content description that admitted it, now genuinely pauses: `ModelDownloader` keeps its partial file and resumes with an HTTP `Range` request, treating only a `206` as a resume and `fsync`ing the bytes a later resume will trust — Pause keeps them, Cancel discards them. And raw exception text no longer reaches the screen: a new `UserFacingException` marks the messages written for a person, everything else is logged and replaced with a sentence that's true of all of them. See [Job history](#job-history-and-the-shared-design-system) and [First-run onboarding](#first-run-onboarding-and-the-splash-screen).
 
-**Checkpoint and resume (2026-10-08): done.** A matching job now carries on from where a killed attempt stopped instead of restarting it. Three pieces of state make that work — extraction recorded complete as its own flag (a part-extracted folder is indistinguishable from a finished one), a scored cursor into a deterministically ordered photo list (the sort is what makes a count mean anything), and matches written as they're found into their own table. The checkpoint records the match before advancing the cursor, so the only way to be wrong is to re-score one photo, which a unique index absorbs — never to lose a match, which the user could not detect. Extraction resumes as well: entries are written under a temporary name and renamed, so a file under its real name is complete by construction and can safely be skipped. See [Resuming instead of restarting](#resuming-instead-of-restarting).
+**Checkpoint and resume (2026-10-08): done.** A matching job now carries on from where a killed attempt stopped instead of restarting it: a scored cursor into a deterministically ordered photo list (the sort is what makes a count mean anything), and matches written as they're found into their own table. The checkpoint records the match before advancing the cursor, so the only way to be wrong is to re-score one photo, which a unique index absorbs — never to lose a match, which the user could not detect. See [Resuming instead of restarting](#resuming-instead-of-restarting).
+
+**Nothing is unpacked (2026-10-09): done.** A 500MB archive cost about 1GB of writes and the same in peak storage; half of that bought nothing. Photos are now read out of the archive as they are scored, via `ZipFile` rather than a stream so the entry list and random access come free, and only the photos that match are written anywhere. The copy of the archive stays, because it is what makes a job independent of the network and of a picker grant that expires. Three things followed: `extractionComplete` was deleted along with the phase it guarded, the free-space precheck went with the writes it was predicting, and the zip-slip guard moved to naming the kept photos. See [Nothing is unpacked](#nothing-is-unpacked-the-write-that-bought-nothing).
 
 **Still open:**
 
 *Resource ceilings*
-- **The ZIP is copied, then fully extracted** — roughly 2× the folder's size in free space, and the copy is a 500MB write that buys nothing since it's only ever read sequentially. Streaming entries from the picked URI would remove both. Blocked behind picking a folder directly (below), which would remove the archive entirely.
+- **The ZIP is still copied into app storage** — one write of the folder's size, now the only large one. It buys independence from an expiring picker grant and from a cloud-backed Uri that would otherwise be re-downloaded on every resumed attempt, so it is a deliberate keep rather than a leftover. A folder picker would remove the archive, and the copy with it.
 - **Peak memory is ~96MB per photo**, since the EXIF rotation holds a second full bitmap alongside the first. Per-photo, not cumulative, so folder size doesn't change it. Downsampling was tried and **rejected** — event photos have small faces in large frames, and reducing resolution measurably cost matching accuracy. A single-allocation decode (`ImageDecoder`, API 28+) would halve the peak without touching resolution, but it replaces a decoder validated pixel-for-pixel against `cv2.imread`, so it needs the alignment harness re-run.
 
 *Missing controls*
@@ -581,9 +603,8 @@ The original MVP checklist (Compose UI, Retrofit integration, Hilt DI, Coil imag
 *Known limitations, accepted*
 - **Gallery-saved photos are duplicated, not aliased.** A saved match exists both as the app's internal `filesDir` copy (what the grid renders) and as a separate MediaStore copy. Android has no API to alias an arbitrary app-private file into MediaStore; the grid could instead load from the gallery `Uri` once saved and drop the internal copy — a storage-efficiency concern, not a correctness one.
 - **Reinstalling loses MediaStore ownership** of previously saved photos, so they read as un-downloaded and re-downloading produces `foo (1).jpg` duplicates.
-- **Gallery dedup keys on a 32-bit hash of an app-private path.** After *clearing app data* (not reinstalling, where ownership is lost anyway) job ids restart at 1, so paths repeat, so the hash repeats while the app can still see the old gallery file. A different photo is then reported as already saved and silently never written. Wants a content digest.
 - **The tick only reconciles on resume** — no `ContentObserver`, so a gallery deletion in split-screen while Results is visible leaves it stale until the screen resumes.
-- **`AbandonedJobSweeper` is the one untested piece of the job lifecycle.** The app module now has 25 tests across four classes (`:facesdk` has 41 across eight): DAO guards via `Room.inMemoryDatabaseBuilder`, the gallery reconcile, the free-space precheck and resumable extraction, and resumption itself. The sweeper is what's left, and it needs `work-testing` to stand up a fake WorkManager, since its whole decision is a liveness question put to it.
+- **`AbandonedJobSweeper` is the one untested piece of the job lifecycle.** The app module has 22 tests across three classes (`:facesdk` has 41 across eight): DAO guards via `Room.inMemoryDatabaseBuilder`, the gallery reconcile, and the use case's resumption, naming and write behaviour. The sweeper is what's left, and it needs `work-testing` to stand up a fake WorkManager, since its whole decision is a liveness question put to it.
 - **Server-vs-on-device routing is an open question, not a decision.** `FaceMatchRepository` is shaped so a server-backed implementation could plug in later without touching the use case — but whether/when that's worth building is undecided, and the Retrofit path remains wired into Hilt with nothing calling it. See [Cross-project status](../Face_recognition/DEEP_DIVE.md#cross-project-status) in the backend's docs.
 
 Cross-project status (this app + the backend) is tracked in one place to avoid two docs drifting out of sync: see "Cross-project status" in `../Face_recognition/README.md`.

@@ -234,16 +234,6 @@ class JobDaoTest {
         assertEquals(emptyList<PendingMatchEntity>(), dao.getPendingMatches(jobId))
     }
 
-    @Test
-    fun `extraction is not complete until it is recorded as complete`() = runTest {
-        val jobId = insertRunningJob("work-1")
-        assertEquals(false, dao.getJobById(jobId)?.extractionComplete)
-
-        dao.markExtractionComplete(jobId)
-
-        assertEquals(true, dao.getJobById(jobId)?.extractionComplete)
-    }
-
     /** Deleting a job has to take its photos with it, or the next job id reuse inherits them. */
     @Test
     fun `deleting a job cascades to its photos`() = runTest {

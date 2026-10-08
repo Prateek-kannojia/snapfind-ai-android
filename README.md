@@ -12,7 +12,7 @@ Backend lives in [`../Face_recognition/`](../Face_recognition/) — no longer ca
 
 0. First launch only: a splash screen, then Onboarding downloads the ~16MB face-matching models with a real progress bar (skipped on every launch after)
 1. Pick a selfie + a ZIP of event photos
-2. Tap "Find My Photos" — unzips locally, matches on-device, cancellable while it runs. The job runs in a foreground-service worker, so **leaving the app doesn't kill it**: progress continues in a notification, and a job that finishes while the app is closed delivers its result there. If the OS kills the process anyway, the job **resumes from where it stopped** rather than starting the event folder again
+2. Tap "Find My Photos" — reads each photo straight out of the archive and matches on-device, cancellable while it runs. The job runs in a foreground-service worker, so **leaving the app doesn't kill it**: progress continues in a notification, and a job that finishes while the app is closed delivers its result there. If the OS kills the process anyway, the job **resumes from where it stopped** rather than starting the event folder again
 3. Results screen shows every matched photo in a grid. One download control per mode: `Download N` in the app bar for everything outstanding, a `Download` action in the selection bar after a long-press, and download/remove in the full-screen viewer for a single photo. Tiles themselves show only status — a tick once a photo is in your gallery
 4. Downloads are idempotent — re-downloading never creates a second copy, and the tick is re-checked against your gallery on every return to the screen, so deleting a photo in Photos clears it
 5. Results survive closing the app, and every past job stays reachable as a Recent Jobs card on the Upload screen
@@ -29,7 +29,7 @@ Domain (use case, repository interface)
 Data (repository impl, wraps :facesdk's FaceMatchEngine)
 ```
 
-The use case (`FindFacesInPhotosUseCase`) owns the actual sequence: read the job's checkpoint → prepare the selfie → unzip what isn't already extracted → score the photos not yet scored → persist → clean up. It is safe to call repeatedly for the same job, and every call either advances it or finishes it. It owns its dispatchers too, rather than trusting the caller's: file work on `Dispatchers.IO`, matching on `Dispatchers.Default`. `:facesdk` is a standalone Gradle module (no Compose/Hilt/Retrofit deps) with its own public API — see DEEP_DIVE.md for its facade + primitives shape.
+The use case (`FindFacesInPhotosUseCase`) owns the actual sequence: read the job's checkpoint → prepare the selfie → list the archive's photos in a fixed order → score the ones not yet scored, writing out each match as it is found → persist → clean up. It is safe to call repeatedly for the same job, and every call either advances it or finishes it. It owns its dispatchers too, rather than trusting the caller's: file work on `Dispatchers.IO`, matching on `Dispatchers.Default`. `:facesdk` is a standalone Gradle module (no Compose/Hilt/Retrofit deps) with its own public API — see DEEP_DIVE.md for its facade + primitives shape.
 
 A shared design layer sits under the screens: `ui/theme/` holds spacing, dimension, shape and colour tokens (a dp literal in a screen is treated as a smell), and `presentation/components/` holds one definition each of the pill button, photo tile, status badge, selection indicator and wavy progress ring — so a saved tick and a selected tick can't drift into different shapes.
 
@@ -67,9 +67,11 @@ facesdk/           # standalone on-device face-matching SDK, sibling module
 |---|---|---|
 | `filesDir/facesdk_models/` | the two ONNX models (~16MB) | downloaded once, kept |
 | `filesDir/saved_matches/<jobId>/` | matched photos, one folder per job | until the job's matches are removed, or the job is deleted |
-| `filesDir/job_work/<requestId>/` | scratch for one run: its selfie, its ZIP, its extraction | deleted when that run ends; kept while the run can still resume; orphans swept at process start |
+| `filesDir/job_work/<requestId>/` | scratch for one run: its selfie, its ZIP, and the photos out of it that matched | deleted when that run ends; kept while the run can still resume; orphans swept at process start |
 | Room `snapfind.db` | job + match metadata only, never image bytes, plus how far a running job got | until app data is cleared |
 | `Pictures/SnapFindAI/` | photos the user downloaded | survives uninstall — these are theirs |
+
+The archive is never unpacked: photos are read out of it as they are scored, and only the ones that match are written at all. A 500MB folder therefore costs one copy of the archive rather than that plus a second full copy on disk.
 
 Recent Jobs shows the running total, and long-pressing a job deletes it. Deleting a job only ever touches the two rows above it in this table — its `saved_matches` folder and its database rows. `Pictures/SnapFindAI/` is reached by no path in that code, so photos the user already downloaded stay put; that's structural, not a precaution.
 

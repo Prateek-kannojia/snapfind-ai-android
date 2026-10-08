@@ -47,9 +47,6 @@ interface JobHistoryRepository {
      */
     suspend fun checkpointFor(jobId: Long): JobCheckpoint
 
-    /** Records that [jobId]'s extraction directory now holds every photo in the archive. */
-    suspend fun markExtractionComplete(jobId: Long)
-
     /**
      * Records that [jobId] has scored [scoredCount] photos, and [match] if
      * that photo matched.

@@ -48,14 +48,4 @@ data class JobEntity(
      * match lost.
      */
     val scoredCount: Int = 0,
-    /**
-     * Whether the extraction directory holds the complete set of this job's
-     * photos.
-     *
-     * Needed as its own flag because the directory cannot answer it. A
-     * part-extracted folder looks exactly like a finished one, and scoring the
-     * subset would report a confident, wrong answer -- "no photos of you in
-     * this event" from half the event.
-     */
-    val extractionComplete: Boolean = false,
 )

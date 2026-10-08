@@ -2,11 +2,11 @@
   "formatVersion": 1,
   "database": {
     "version": 1,
-    "identityHash": "b1bab5d4995814d07f21ccec60426f85",
+    "identityHash": "4d2f01d978b6be815b31053aeb64f45d",
     "entities": [
       {
         "tableName": "jobs",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `timestamp` INTEGER NOT NULL, `threshold` REAL NOT NULL, `status` TEXT NOT NULL, `workId` TEXT, `scoredCount` INTEGER NOT NULL, `extractionComplete` INTEGER NOT NULL)",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `timestamp` INTEGER NOT NULL, `threshold` REAL NOT NULL, `status` TEXT NOT NULL, `workId` TEXT, `scoredCount` INTEGER NOT NULL)",
         "fields": [
           {
             "fieldPath": "id",
@@ -41,12 +41,6 @@
           {
             "fieldPath": "scoredCount",
             "columnName": "scoredCount",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "extractionComplete",
-            "columnName": "extractionComplete",
             "affinity": "INTEGER",
             "notNull": true
           }
@@ -216,7 +210,7 @@
     "views": [],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'b1bab5d4995814d07f21ccec60426f85')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '4d2f01d978b6be815b31053aeb64f45d')"
     ]
   }
 }

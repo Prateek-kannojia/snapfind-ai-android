@@ -59,10 +59,6 @@ interface JobDao {
     @Query("UPDATE jobs SET scoredCount = :scoredCount WHERE id = :jobId")
     suspend fun setScoredCount(jobId: Long, scoredCount: Int)
 
-    /** Set once the extraction directory holds every photo in the archive -- see [JobEntity.extractionComplete]. */
-    @Query("UPDATE jobs SET extractionComplete = 1 WHERE id = :jobId")
-    suspend fun markExtractionComplete(jobId: Long)
-
     /** `ORDER BY id` so a resumed job's matches keep the order they were found in, which is the order the grid will show. */
     @Query("SELECT * FROM pending_matches WHERE jobId = :jobId ORDER BY id")
     suspend fun getPendingMatches(jobId: Long): List<PendingMatchEntity>

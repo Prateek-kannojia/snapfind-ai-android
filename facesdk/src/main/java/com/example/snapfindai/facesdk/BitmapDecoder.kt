@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.media.ExifInterface
+import java.io.ByteArrayInputStream
 import java.io.File
 
 /**
@@ -39,15 +40,36 @@ object BitmapDecoder {
     const val MAX_PIXELS = 12_000_000
 
     fun decodeWithExifCorrection(file: File): Bitmap {
-        val raw = decodeWithinPixelCap(file)
+        val raw = decodeWithinPixelCap { options -> BitmapFactory.decodeFile(file.absolutePath, options) }
             ?: throw IllegalStateException("Could not decode ${file.name}")
-        val orientation = try {
-            ExifInterface(file.absolutePath)
-                .getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
-        } catch (e: Exception) {
-            ExifInterface.ORIENTATION_NORMAL
-        }
+        return applyOrientation(raw, orientationOf { ExifInterface(file.absolutePath) })
+    }
 
+    /**
+     * The same decode for a photo that has no file -- one read straight out
+     * of an archive, scored and then thrown away unless it matches.
+     *
+     * Identical output to the [File] overload: the same two-pass cap, the
+     * same EXIF correction, the same `BitmapFactory` underneath. It is also
+     * marginally cheaper, because the bounds pass and the real decode read
+     * the one array in memory rather than opening the file twice.
+     *
+     * [name] is only ever used to name the photo in an error.
+     */
+    fun decodeWithExifCorrection(bytes: ByteArray, name: String): Bitmap {
+        val raw = decodeWithinPixelCap { options -> BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) }
+            ?: throw IllegalStateException("Could not decode $name")
+        return applyOrientation(raw, orientationOf { ExifInterface(ByteArrayInputStream(bytes)) })
+    }
+
+    /** Unreadable or absent EXIF reads as "no rotation needed", which is what an image without it means. */
+    private fun orientationOf(open: () -> ExifInterface): Int = try {
+        open().getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+    } catch (e: Exception) {
+        ExifInterface.ORIENTATION_NORMAL
+    }
+
+    private fun applyOrientation(raw: Bitmap, orientation: Int): Bitmap {
         val matrix = Matrix()
         when (orientation) {
             ExifInterface.ORIENTATION_NORMAL, ExifInterface.ORIENTATION_UNDEFINED -> return raw
@@ -69,15 +91,19 @@ object BitmapDecoder {
      * Reads the dimensions first with `inJustDecodeBounds`, which allocates
      * nothing, so an oversized image is known about before anything tries to
      * hold it in memory.
+     *
+     * Takes the decode itself as a parameter so a file and a block of bytes
+     * share one copy of the two-pass logic -- the cap is the part worth not
+     * having twice.
      */
-    private fun decodeWithinPixelCap(file: File): Bitmap? {
+    private fun decodeWithinPixelCap(decode: (BitmapFactory.Options) -> Bitmap?): Bitmap? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeFile(file.absolutePath, bounds)
+        decode(bounds)
 
         val options = BitmapFactory.Options().apply {
             inSampleSize = sampleSizeFor(bounds.outWidth, bounds.outHeight)
         }
-        return BitmapFactory.decodeFile(file.absolutePath, options)
+        return decode(options)
     }
 
     /**

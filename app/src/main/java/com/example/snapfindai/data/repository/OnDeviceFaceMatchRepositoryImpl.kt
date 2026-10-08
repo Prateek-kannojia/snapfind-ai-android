@@ -3,7 +3,8 @@ package com.example.snapfindai.data.repository
 import android.content.Context
 import android.graphics.Bitmap
 import com.example.snapfindai.data.ModelConfig
-import com.example.snapfindai.domain.model.FaceMatchResult
+import com.example.snapfindai.domain.model.EventPhoto
+import com.example.snapfindai.domain.model.PhotoMatch
 import com.example.snapfindai.domain.repository.FaceMatchRepository
 import com.example.snapfindai.domain.repository.PreparedSelfie
 import com.example.snapfindai.facesdk.BitmapDecoder
@@ -93,10 +94,10 @@ class OnDeviceFaceMatchRepositoryImpl @Inject constructor(
     // the main thread, and froze the app for the length of the job.
     override suspend fun matchPhotos(
         selfie: PreparedSelfie,
-        eventPhotos: List<File>,
+        eventPhotos: List<EventPhoto>,
         threshold: Float,
-        onScored: (suspend (scored: Int, match: FaceMatchResult?) -> Unit)?,
-    ): List<FaceMatchResult> = withContext(Dispatchers.Default) {
+        onScored: suspend (scored: Int, match: PhotoMatch?) -> Unit,
+    ) = withContext(Dispatchers.Default) {
         val engine = engine()
         // Only prepareSelfie above can produce one of these, so this holds for
         // every caller -- the check is here to fail loudly rather than with a
@@ -104,19 +105,21 @@ class OnDeviceFaceMatchRepositoryImpl @Inject constructor(
         val selfieEmbedding = (selfie as? EmbeddedSelfie)?.embedding
             ?: error("PreparedSelfie came from a different FaceMatchRepository implementation")
 
-        val matches = mutableListOf<FaceMatchResult>()
         eventPhotos.forEachIndexed { index, photo ->
-            // Checked before the decode, not left to the next suspension
-            // point: decoding and rotating a full-resolution photo is the
-            // most expensive step here, and there's no reason to spend it on
-            // a job the user has already called off.
+            // Checked before the read and decode, not left to the next
+            // suspension point: those are the most expensive steps here, and
+            // there's no reason to spend them on a job the user called off.
             currentCoroutineContext().ensureActive()
 
-            var match: FaceMatchResult? = null
+            var match: PhotoMatch? = null
+            // One photo's bytes at a time, held only for as long as it takes
+            // to decode them. The alternative the job used to live with was
+            // every photo written to disk first, which cost the size of the
+            // whole archive again for files read once and deleted.
             val bitmap: Bitmap? = try {
-                BitmapDecoder.decodeWithExifCorrection(photo)
+                BitmapDecoder.decodeWithExifCorrection(photo.readBytes(), photo.name)
             } catch (e: Exception) {
-                null // corrupt/unreadable file -> skip, same as "no face found"
+                null // corrupt/unreadable entry -> skip, same as "no face found"
             }
             if (bitmap != null) {
                 val distance = try {
@@ -127,15 +130,13 @@ class OnDeviceFaceMatchRepositoryImpl @Inject constructor(
                     bitmap.recycle()
                 }
                 if (distance != null && FaceMatcher.isMatch(distance, threshold)) {
-                    match = FaceMatchResult(photo = photo, distance = distance)
-                    matches += match
+                    match = PhotoMatch(photo = photo, distance = distance)
                 }
             }
             // Awaited, not launched: the caller uses this to make the match
             // durable, and the next photo must not be scored until it is.
-            onScored?.invoke(index + 1, match)
+            onScored(index + 1, match)
         }
-        matches
     }
 
     /**

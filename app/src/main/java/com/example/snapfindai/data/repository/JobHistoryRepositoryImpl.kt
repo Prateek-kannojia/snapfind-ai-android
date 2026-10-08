@@ -67,7 +67,6 @@ class JobHistoryRepositoryImpl @Inject constructor(
         val job = jobDao.getJobById(jobId) ?: return@withContext JobCheckpoint.NONE
         JobCheckpoint(
             scoredCount = job.scoredCount,
-            extractionComplete = job.extractionComplete,
             // Existence is checked here, once, rather than trusted by the
             // caller: these paths were written by an attempt that did not
             // finish, and a match whose file has gone would fail minutes later
@@ -77,10 +76,6 @@ class JobHistoryRepositoryImpl @Inject constructor(
                 .filter { (photo, _) -> photo.exists() }
                 .map { (photo, distance) -> FaceMatchResult(photo = photo, distance = distance) },
         )
-    }
-
-    override suspend fun markExtractionComplete(jobId: Long) = withContext(Dispatchers.IO) {
-        jobDao.markExtractionComplete(jobId)
     }
 
     override suspend fun recordScored(jobId: Long, scoredCount: Int, match: FaceMatchResult?) =

@@ -16,16 +16,14 @@ package com.example.snapfindai.domain.model
 data class JobCheckpoint(
     /** Photos already scored, counted into the job's deterministically ordered photo list. */
     val scoredCount: Int,
-    /** Whether the extraction directory holds every photo in the archive, or only some of them. */
-    val extractionComplete: Boolean,
     /**
-     * Matches found by previous attempts, still pointing at the extraction
+     * Matches found by previous attempts, still in the job's working
      * directory. Filtered to files that are actually present, so a checkpoint
      * can never hand back a match whose file has gone.
      */
     val matches: List<FaceMatchResult>,
 ) {
     companion object {
-        val NONE = JobCheckpoint(scoredCount = 0, extractionComplete = false, matches = emptyList())
+        val NONE = JobCheckpoint(scoredCount = 0, matches = emptyList())
     }
 }

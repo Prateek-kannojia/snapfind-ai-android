@@ -1,6 +1,7 @@
 package com.example.snapfindai.domain.repository
 
-import com.example.snapfindai.domain.model.FaceMatchResult
+import com.example.snapfindai.domain.model.EventPhoto
+import com.example.snapfindai.domain.model.PhotoMatch
 import java.io.File
 
 /**
@@ -40,23 +41,29 @@ interface FaceMatchRepository {
      * the check above having passed -- there's no way to obtain the argument
      * otherwise.
      *
-     * Scores exactly the [eventPhotos] it is given, in the order given. A
-     * caller resuming an interrupted job passes only the photos still to do;
-     * this knows nothing about resumption, and shouldn't -- where a job got to
-     * is the caller's state, not the matcher's.
+     * Scores exactly the [eventPhotos] it is given, in the order given, and
+     * reads each one only when it reaches it. A caller resuming an
+     * interrupted job passes only the photos still to do; this knows nothing
+     * about resumption, and shouldn't -- where a job got to is the caller's
+     * state, not the matcher's.
      *
-     * [onScored] is called once per photo with how many of *this* list have
-     * been scored and the match it produced, or null if it didn't match. It
-     * suspends because the caller's reason for wanting it is usually to write
-     * something down: a progress update, or a checkpoint that has to be
-     * durable before the next photo is scored. Implementations must await it
-     * rather than launching it, or a checkpoint can be lost to the very kill
-     * it exists to survive.
+     * Reports through [onScored] rather than returning a list, because a
+     * match has to be dealt with the moment it is found: the caller writes it
+     * down before the next photo is scored, so a process killed mid-job loses
+     * nothing. A return value would be a second copy of the same facts,
+     * available only to a run that finished -- which is the one case where
+     * nothing can go wrong.
+     *
+     * [onScored] carries how many of *this* list have been scored and the
+     * match that photo produced, or null if it didn't match. It suspends
+     * because the caller's work is usually to write something durable, and
+     * implementations must await it rather than launching it -- or a
+     * checkpoint can be lost to the very kill it exists to survive.
      */
     suspend fun matchPhotos(
         selfie: PreparedSelfie,
-        eventPhotos: List<File>,
+        eventPhotos: List<EventPhoto>,
         threshold: Float,
-        onScored: (suspend (scored: Int, match: FaceMatchResult?) -> Unit)? = null,
-    ): List<FaceMatchResult>
+        onScored: suspend (scored: Int, match: PhotoMatch?) -> Unit,
+    )
 }
