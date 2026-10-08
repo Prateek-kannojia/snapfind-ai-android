@@ -68,6 +68,17 @@ object FileHelper {
      * only so it can check for cancellation between entries: extracting
      * 500MB is otherwise one uninterruptible block, and "cancel" during it
      * would do nothing until the whole archive had been written out.
+     *
+     * **Resumable.** Each entry is written under a temporary name and only
+     * then renamed into place, so a file that exists under its real name is
+     * known to be complete -- and an entry whose file is already there is
+     * skipped. Calling this again after a process kill therefore costs the
+     * inflate but not the write for everything the previous attempt finished,
+     * instead of overwriting the lot.
+     *
+     * The rename is what makes the skip safe. Writing directly would leave a
+     * truncated file looking exactly like a finished one, and the next attempt
+     * would skip it and then try to decode a half-written photo.
      */
     suspend fun unzip(zipFile: File, destDir: File, maxTotalBytes: Long): List<File> {
         destDir.mkdirs()
@@ -84,9 +95,25 @@ object FileHelper {
                     if (!outFile.path.startsWith(destCanonicalPath + File.separator)) {
                         throw SecurityException("Zip entry outside target directory: ${entry.name}")
                     }
-                    outFile.parentFile?.mkdirs()
-                    FileOutputStream(outFile).use { output -> zis.copyTo(output) }
-                    extracted += outFile
+                    if (outFile.exists()) {
+                        // Left by an earlier attempt, and complete by
+                        // construction -- only the rename below creates this
+                        // name. Counted toward the expansion guard like any
+                        // other extracted byte, so resuming can't be a way
+                        // around it.
+                        extracted += outFile
+                        totalBytes += outFile.length()
+                    } else {
+                        outFile.parentFile?.mkdirs()
+                        val partFile = File(outFile.path + PART_SUFFIX)
+                        FileOutputStream(partFile).use { output -> zis.copyTo(output) }
+                        if (!partFile.renameTo(outFile)) {
+                            partFile.delete()
+                            throw IOException("Couldn't finish extracting ${entry.name}.")
+                        }
+                        extracted += outFile
+                        totalBytes += outFile.length()
+                    }
 
                     // The zip-slip check above stops an archive writing
                     // outside this directory; it does nothing about one that
@@ -94,7 +121,6 @@ object FileHelper {
                     // compress, so wildly exceeding the archive's size means
                     // this isn't a photo archive, and continuing would fill
                     // the device.
-                    totalBytes += outFile.length()
                     if (totalBytes > maxTotalBytes) {
                         throw IOException(
                             "That ZIP expands to far more than its own size, which doesn't look like a photo archive."
@@ -133,6 +159,13 @@ object FileHelper {
 
     /** How far an archive may expand beyond its own size before it stops looking like photos. */
     const val MAX_EXPANSION_FACTOR = 4
+
+    /**
+     * What a half-written entry is called. Not a photo extension, so a
+     * leftover one is filtered out by every caller that looks for photos
+     * rather than being handed to a decoder.
+     */
+    private const val PART_SUFFIX = ".part"
 
     private const val EXTRACTION_SPACE_MARGIN = 1.3
 }

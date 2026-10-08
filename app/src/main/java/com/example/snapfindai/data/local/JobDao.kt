@@ -2,6 +2,7 @@ package com.example.snapfindai.data.local
 
 import androidx.room.Dao
 import androidx.room.Insert
+import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
 
@@ -34,6 +35,42 @@ interface JobDao {
     suspend fun getJobIdForWork(workId: String): Long?
 
     /**
+     * Records that a job has scored [scoredCount] of its photos, and the match
+     * that photo produced if it produced one.
+     *
+     * One transaction, and in this order, because the two writes mean
+     * different things if they come apart. Match first, cursor second: a
+     * process killed between them loses nothing -- the next attempt re-scores
+     * that one photo and the unique index absorbs the duplicate. Cursor first
+     * would mean a photo marked done whose match was never written, and a
+     * match silently missing from the results is the one outcome the user
+     * cannot detect.
+     */
+    @Transaction
+    suspend fun checkpointScored(jobId: Long, scoredCount: Int, match: PendingMatchEntity?) {
+        if (match != null) insertPendingMatch(match)
+        setScoredCount(jobId, scoredCount)
+    }
+
+    /** IGNORE rather than REPLACE: a re-scored photo produces an identical row, and replacing it would churn its id for nothing. */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertPendingMatch(match: PendingMatchEntity)
+
+    @Query("UPDATE jobs SET scoredCount = :scoredCount WHERE id = :jobId")
+    suspend fun setScoredCount(jobId: Long, scoredCount: Int)
+
+    /** Set once the extraction directory holds every photo in the archive -- see [JobEntity.extractionComplete]. */
+    @Query("UPDATE jobs SET extractionComplete = 1 WHERE id = :jobId")
+    suspend fun markExtractionComplete(jobId: Long)
+
+    /** `ORDER BY id` so a resumed job's matches keep the order they were found in, which is the order the grid will show. */
+    @Query("SELECT * FROM pending_matches WHERE jobId = :jobId ORDER BY id")
+    suspend fun getPendingMatches(jobId: Long): List<PendingMatchEntity>
+
+    @Query("DELETE FROM pending_matches WHERE jobId = :jobId")
+    suspend fun deletePendingMatches(jobId: Long)
+
+    /**
      * Finishes a job in one transaction: its photos and its status become
      * visible together or not at all.
      *
@@ -46,6 +83,10 @@ interface JobDao {
     @Transaction
     suspend fun completeJobWithPhotos(jobId: Long, photos: List<MatchedPhotoEntity>, completeStatus: String) {
         insertMatchedPhotos(photos)
+        // In the same transaction as the real results, so there is no instant
+        // where a job is both finished and still carrying notes about how to
+        // resume it.
+        deletePendingMatches(jobId)
         setJobStatus(jobId, completeStatus)
     }
 
@@ -79,8 +120,9 @@ interface JobDao {
      * `ORDER BY id` is load-bearing, not cosmetic: without it SQLite makes no
      * ordering promise at all, so two separate calls could return the same
      * rows in different orders -- and Results and the photo viewer each call
-     * this independently for the same job. Insertion order is also the order
-     * the photos came out of the ZIP, which is what the user sees in the grid.
+     * this independently for the same job. Insertion order is the order the
+     * job found its matches in -- which is the order its photos were scored,
+     * sorted by path -- and that is what the user sees in the grid.
      */
     @Query("SELECT * FROM matched_photos WHERE jobId = :jobId ORDER BY id")
     suspend fun getMatchedPhotosForJob(jobId: Long): List<MatchedPhotoEntity>

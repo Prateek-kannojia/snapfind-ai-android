@@ -2,11 +2,11 @@
   "formatVersion": 1,
   "database": {
     "version": 1,
-    "identityHash": "d04cd1b8e910918e74755be4b1665d83",
+    "identityHash": "b1bab5d4995814d07f21ccec60426f85",
     "entities": [
       {
         "tableName": "jobs",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `timestamp` INTEGER NOT NULL, `threshold` REAL NOT NULL, `status` TEXT NOT NULL, `workId` TEXT)",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `timestamp` INTEGER NOT NULL, `threshold` REAL NOT NULL, `status` TEXT NOT NULL, `workId` TEXT, `scoredCount` INTEGER NOT NULL, `extractionComplete` INTEGER NOT NULL)",
         "fields": [
           {
             "fieldPath": "id",
@@ -37,6 +37,18 @@
             "columnName": "workId",
             "affinity": "TEXT",
             "notNull": false
+          },
+          {
+            "fieldPath": "scoredCount",
+            "columnName": "scoredCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "extractionComplete",
+            "columnName": "extractionComplete",
+            "affinity": "INTEGER",
+            "notNull": true
           }
         ],
         "primaryKey": {
@@ -129,12 +141,82 @@
             ]
           }
         ]
+      },
+      {
+        "tableName": "pending_matches",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `jobId` INTEGER NOT NULL, `photoPath` TEXT NOT NULL, `distance` REAL NOT NULL, FOREIGN KEY(`jobId`) REFERENCES `jobs`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "jobId",
+            "columnName": "jobId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "photoPath",
+            "columnName": "photoPath",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "distance",
+            "columnName": "distance",
+            "affinity": "REAL",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_pending_matches_jobId",
+            "unique": false,
+            "columnNames": [
+              "jobId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_pending_matches_jobId` ON `${TABLE_NAME}` (`jobId`)"
+          },
+          {
+            "name": "index_pending_matches_jobId_photoPath",
+            "unique": true,
+            "columnNames": [
+              "jobId",
+              "photoPath"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_pending_matches_jobId_photoPath` ON `${TABLE_NAME}` (`jobId`, `photoPath`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "jobs",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "jobId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
       }
     ],
     "views": [],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'd04cd1b8e910918e74755be4b1665d83')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'b1bab5d4995814d07f21ccec60426f85')"
     ]
   }
 }

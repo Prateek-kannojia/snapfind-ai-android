@@ -16,9 +16,17 @@ import androidx.room.RoomDatabase
  * `autoMigrations` entry; anything Room cannot infer -- a rename, a type
  * change, a column whose value has to be computed from other columns --
  * needs a hand-written `Migration` registered in `DatabaseModule`.
+ *
+ * "From here" means from the first release. Until then there is no installed
+ * copy of version 1 anywhere, so version 1 is still being defined rather than
+ * migrated from: a change is made in place and the exported JSON regenerated.
+ * The cost is that a development install has to be reinstalled, because Room
+ * compares a hash of the schema and refuses to open a database that doesn't
+ * match -- which is the loud failure the missing destructive fallback exists
+ * to produce.
  */
 @Database(
-    entities = [JobEntity::class, MatchedPhotoEntity::class],
+    entities = [JobEntity::class, MatchedPhotoEntity::class, PendingMatchEntity::class],
     version = 1,
     exportSchema = true,
 )

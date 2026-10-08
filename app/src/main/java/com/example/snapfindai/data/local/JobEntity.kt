@@ -34,4 +34,28 @@ data class JobEntity(
      * being built, which reads correctly as "nothing is coming for this".
      */
     val workId: String? = null,
+    /**
+     * How many of this job's event photos have been scored, so a restarted
+     * attempt can skip them.
+     *
+     * Meaningful only because the photo list is built in a deterministic
+     * order (see `FindFacesInPhotosUseCase`) -- a count into a list whose
+     * order varies between attempts points at a different photo each time,
+     * which is worse than not resuming at all.
+     *
+     * Advanced *after* any match from that photo is recorded, so the pair is
+     * only ever out of step in the safe direction: a photo re-scored, never a
+     * match lost.
+     */
+    val scoredCount: Int = 0,
+    /**
+     * Whether the extraction directory holds the complete set of this job's
+     * photos.
+     *
+     * Needed as its own flag because the directory cannot answer it. A
+     * part-extracted folder looks exactly like a finished one, and scoring the
+     * subset would report a confident, wrong answer -- "no photos of you in
+     * this event" from half the event.
+     */
+    val extractionComplete: Boolean = false,
 )

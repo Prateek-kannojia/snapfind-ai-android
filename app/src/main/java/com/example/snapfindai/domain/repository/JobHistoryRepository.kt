@@ -2,6 +2,7 @@ package com.example.snapfindai.domain.repository
 
 import com.example.snapfindai.domain.model.AbandonedJob
 import com.example.snapfindai.domain.model.FaceMatchResult
+import com.example.snapfindai.domain.model.JobCheckpoint
 import com.example.snapfindai.domain.model.JobSummary
 import com.example.snapfindai.domain.model.SavedJob
 import java.io.File
@@ -35,6 +36,29 @@ interface JobHistoryRepository {
      * died before it could report success.
      */
     suspend fun needsWork(jobId: Long): Boolean
+
+    /**
+     * How far [jobId] got before it last stopped -- [JobCheckpoint.NONE] for a
+     * job on its first attempt, or one whose row is gone.
+     *
+     * Read once at the start of an attempt rather than consulted as it goes,
+     * because it answers a question about the past: everything after this
+     * point is the attempt's own progress, which it already knows.
+     */
+    suspend fun checkpointFor(jobId: Long): JobCheckpoint
+
+    /** Records that [jobId]'s extraction directory now holds every photo in the archive. */
+    suspend fun markExtractionComplete(jobId: Long)
+
+    /**
+     * Records that [jobId] has scored [scoredCount] photos, and [match] if
+     * that photo matched.
+     *
+     * One call rather than two so the match and the cursor move together. The
+     * ordering inside is deliberate and asymmetric -- see
+     * `JobDao.checkpointScored`.
+     */
+    suspend fun recordScored(jobId: Long, scoredCount: Int, match: FaceMatchResult?)
 
     /**
      * Finishes the job [jobId] started, persisting [matches] into stable

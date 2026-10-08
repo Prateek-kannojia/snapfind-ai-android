@@ -154,6 +154,96 @@ class JobDaoTest {
         assertEquals("insertion order is ZIP order, which is what the grid shows", paths, returned)
     }
 
+    /**
+     * The checkpoint's whole purpose: a restarted attempt has to be able to
+     * read back where the last one stopped.
+     */
+    @Test
+    fun `a checkpoint records the cursor and the match together`() = runTest {
+        val jobId = insertRunningJob("work-1")
+
+        dao.checkpointScored(
+            jobId = jobId,
+            scoredCount = 7,
+            match = PendingMatchEntity(jobId = jobId, photoPath = "/extract/g.jpg", distance = 0.4f),
+        )
+
+        assertEquals(7, dao.getJobById(jobId)?.scoredCount)
+        assertEquals("/extract/g.jpg", dao.getPendingMatches(jobId).single().photoPath)
+    }
+
+    /**
+     * The checkpoint deliberately writes the match before advancing the
+     * cursor, so a process killed between the two leaves the photo looking
+     * un-scored and the next attempt scores it again. That re-write must be a
+     * no-op rather than a second row -- otherwise surviving the kill would
+     * cost a duplicate in the results grid.
+     */
+    @Test
+    fun `re-scoring a photo after a kill does not duplicate its match`() = runTest {
+        val jobId = insertRunningJob("work-1")
+        val match = PendingMatchEntity(jobId = jobId, photoPath = "/extract/g.jpg", distance = 0.4f)
+
+        dao.checkpointScored(jobId, scoredCount = 6, match = match) // killed before the cursor landed
+        dao.checkpointScored(jobId, scoredCount = 7, match = match) // the retry scores it again
+
+        assertEquals(1, dao.getPendingMatches(jobId).size)
+        assertEquals(7, dao.getJobById(jobId)?.scoredCount)
+    }
+
+    /**
+     * A finished job must not still be carrying notes on how to resume
+     * itself, and the clearing has to be in the same transaction as the
+     * results -- there is no instant where both are true.
+     */
+    @Test
+    fun `completing a job clears the notes it was resuming from`() = runTest {
+        val jobId = insertRunningJob("work-1")
+        dao.checkpointScored(
+            jobId = jobId,
+            scoredCount = 3,
+            match = PendingMatchEntity(jobId = jobId, photoPath = "/extract/a.jpg", distance = 0.4f),
+        )
+
+        dao.completeJobWithPhotos(
+            jobId = jobId,
+            photos = listOf(MatchedPhotoEntity(jobId = jobId, photoPath = "/saved/a.jpg", distance = 0.4f, galleryName = "g_a.jpg")),
+            completeStatus = JobStatus.Complete.name,
+        )
+
+        assertEquals(emptyList<PendingMatchEntity>(), dao.getPendingMatches(jobId))
+        assertEquals(1, dao.getMatchedPhotosForJob(jobId).size)
+    }
+
+    /**
+     * Pending matches point into a working directory that is deleted when a
+     * job is abandoned or deleted. Left behind, they would be read by a later
+     * job that inherited the same id and point at files that are gone.
+     */
+    @Test
+    fun `deleting a job cascades to the notes it was resuming from`() = runTest {
+        val jobId = insertRunningJob("work-1")
+        dao.checkpointScored(
+            jobId = jobId,
+            scoredCount = 1,
+            match = PendingMatchEntity(jobId = jobId, photoPath = "/extract/a.jpg", distance = 0.4f),
+        )
+
+        dao.deleteJob(jobId)
+
+        assertEquals(emptyList<PendingMatchEntity>(), dao.getPendingMatches(jobId))
+    }
+
+    @Test
+    fun `extraction is not complete until it is recorded as complete`() = runTest {
+        val jobId = insertRunningJob("work-1")
+        assertEquals(false, dao.getJobById(jobId)?.extractionComplete)
+
+        dao.markExtractionComplete(jobId)
+
+        assertEquals(true, dao.getJobById(jobId)?.extractionComplete)
+    }
+
     /** Deleting a job has to take its photos with it, or the next job id reuse inherits them. */
     @Test
     fun `deleting a job cascades to its photos`() = runTest {

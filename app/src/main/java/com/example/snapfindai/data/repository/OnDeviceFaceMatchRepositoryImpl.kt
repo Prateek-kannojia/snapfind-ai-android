@@ -95,7 +95,7 @@ class OnDeviceFaceMatchRepositoryImpl @Inject constructor(
         selfie: PreparedSelfie,
         eventPhotos: List<File>,
         threshold: Float,
-        onProgress: ((scored: Int, total: Int) -> Unit)?,
+        onScored: (suspend (scored: Int, match: FaceMatchResult?) -> Unit)?,
     ): List<FaceMatchResult> = withContext(Dispatchers.Default) {
         val engine = engine()
         // Only prepareSelfie above can produce one of these, so this holds for
@@ -112,6 +112,7 @@ class OnDeviceFaceMatchRepositoryImpl @Inject constructor(
             // a job the user has already called off.
             currentCoroutineContext().ensureActive()
 
+            var match: FaceMatchResult? = null
             val bitmap: Bitmap? = try {
                 BitmapDecoder.decodeWithExifCorrection(photo)
             } catch (e: Exception) {
@@ -126,10 +127,13 @@ class OnDeviceFaceMatchRepositoryImpl @Inject constructor(
                     bitmap.recycle()
                 }
                 if (distance != null && FaceMatcher.isMatch(distance, threshold)) {
-                    matches += FaceMatchResult(photo = photo, distance = distance)
+                    match = FaceMatchResult(photo = photo, distance = distance)
+                    matches += match
                 }
             }
-            onProgress?.invoke(index + 1, eventPhotos.size)
+            // Awaited, not launched: the caller uses this to make the match
+            // durable, and the next photo must not be scored until it is.
+            onScored?.invoke(index + 1, match)
         }
         matches
     }

@@ -5,8 +5,10 @@ import com.example.snapfindai.data.local.JobDao
 import com.example.snapfindai.data.local.JobEntity
 import com.example.snapfindai.data.local.JobStatus
 import com.example.snapfindai.data.local.MatchedPhotoEntity
+import com.example.snapfindai.data.local.PendingMatchEntity
 import com.example.snapfindai.domain.model.AbandonedJob
 import com.example.snapfindai.domain.model.FaceMatchResult
+import com.example.snapfindai.domain.model.JobCheckpoint
 import com.example.snapfindai.domain.model.JobSummary
 import com.example.snapfindai.domain.model.SavedJob
 import com.example.snapfindai.domain.repository.JobHistoryRepository
@@ -60,6 +62,37 @@ class JobHistoryRepositoryImpl @Inject constructor(
         // a row pointing at files that are gone.
         jobDao.deleteJob(jobId)
     }
+
+    override suspend fun checkpointFor(jobId: Long): JobCheckpoint = withContext(Dispatchers.IO) {
+        val job = jobDao.getJobById(jobId) ?: return@withContext JobCheckpoint.NONE
+        JobCheckpoint(
+            scoredCount = job.scoredCount,
+            extractionComplete = job.extractionComplete,
+            // Existence is checked here, once, rather than trusted by the
+            // caller: these paths were written by an attempt that did not
+            // finish, and a match whose file has gone would fail minutes later
+            // inside completeJob's copy, with the job already looking done.
+            matches = jobDao.getPendingMatches(jobId)
+                .map { File(it.photoPath) to it.distance }
+                .filter { (photo, _) -> photo.exists() }
+                .map { (photo, distance) -> FaceMatchResult(photo = photo, distance = distance) },
+        )
+    }
+
+    override suspend fun markExtractionComplete(jobId: Long) = withContext(Dispatchers.IO) {
+        jobDao.markExtractionComplete(jobId)
+    }
+
+    override suspend fun recordScored(jobId: Long, scoredCount: Int, match: FaceMatchResult?) =
+        withContext(Dispatchers.IO) {
+            jobDao.checkpointScored(
+                jobId = jobId,
+                scoredCount = scoredCount,
+                match = match?.let {
+                    PendingMatchEntity(jobId = jobId, photoPath = it.photo.absolutePath, distance = it.distance)
+                },
+            )
+        }
 
     override suspend fun abandonedJobs(): List<AbandonedJob> = withContext(Dispatchers.IO) {
         jobDao.getJobsWithStatus(JobStatus.Running.name)

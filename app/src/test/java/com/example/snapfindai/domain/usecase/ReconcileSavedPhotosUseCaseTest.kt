@@ -2,6 +2,7 @@ package com.example.snapfindai.domain.usecase
 
 import com.example.snapfindai.domain.model.AbandonedJob
 import com.example.snapfindai.domain.model.FaceMatchResult
+import com.example.snapfindai.domain.model.JobCheckpoint
 import com.example.snapfindai.domain.model.JobSummary
 import com.example.snapfindai.domain.model.SavedJob
 import com.example.snapfindai.domain.repository.GallerySaveResult
@@ -105,6 +106,9 @@ class ReconcileSavedPhotosUseCaseTest {
         override suspend fun completeJob(jobId: Long, matches: List<FaceMatchResult>): List<FaceMatchResult> = unused()
         override suspend fun abandonJob(jobId: Long) = unused()
         override suspend fun deleteJob(jobId: Long) = unused()
+        override suspend fun checkpointFor(jobId: Long): JobCheckpoint = unused()
+        override suspend fun markExtractionComplete(jobId: Long) = unused()
+        override suspend fun recordScored(jobId: Long, scoredCount: Int, match: FaceMatchResult?) = unused()
         override suspend fun abandonedJobs(): List<AbandonedJob> = unused()
         override suspend fun getLastJob(): SavedJob? = unused()
         override suspend fun getJob(jobId: Long): SavedJob? = unused()

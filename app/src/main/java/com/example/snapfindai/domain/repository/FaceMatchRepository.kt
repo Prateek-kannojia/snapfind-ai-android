@@ -40,14 +40,23 @@ interface FaceMatchRepository {
      * the check above having passed -- there's no way to obtain the argument
      * otherwise.
      *
-     * [onProgress], if given, is called after each event photo is scored --
-     * (photos scored so far, total). Best-effort UI feedback, not a contract
-     * every implementation must honor precisely.
+     * Scores exactly the [eventPhotos] it is given, in the order given. A
+     * caller resuming an interrupted job passes only the photos still to do;
+     * this knows nothing about resumption, and shouldn't -- where a job got to
+     * is the caller's state, not the matcher's.
+     *
+     * [onScored] is called once per photo with how many of *this* list have
+     * been scored and the match it produced, or null if it didn't match. It
+     * suspends because the caller's reason for wanting it is usually to write
+     * something down: a progress update, or a checkpoint that has to be
+     * durable before the next photo is scored. Implementations must await it
+     * rather than launching it, or a checkpoint can be lost to the very kill
+     * it exists to survive.
      */
     suspend fun matchPhotos(
         selfie: PreparedSelfie,
         eventPhotos: List<File>,
         threshold: Float,
-        onProgress: ((scored: Int, total: Int) -> Unit)? = null,
+        onScored: (suspend (scored: Int, match: FaceMatchResult?) -> Unit)? = null,
     ): List<FaceMatchResult>
 }
