@@ -15,7 +15,7 @@ Backend lives in [`../Face_recognition/`](../Face_recognition/) — no longer ca
 2. Tap "Find My Photos" — reads each photo straight out of the archive and matches on-device, cancellable while it runs. The job runs in a foreground-service worker, so **leaving the app doesn't kill it**: progress continues in a notification, and a job that finishes while the app is closed delivers its result there. If the OS kills the process anyway, the job **resumes from where it stopped** rather than starting the event folder again
 3. Results screen shows every matched photo in a grid. One download control per mode: `Download N` in the app bar for everything outstanding, a `Download` action in the selection bar after a long-press, and download/remove in the full-screen viewer for a single photo. Tiles themselves show only status — a tick once a photo is in your gallery
 4. Downloads are idempotent — re-downloading never creates a second copy, and the tick is re-checked against your gallery on every return to the screen, so deleting a photo in Photos clears it
-5. Results survive closing the app, and every past job stays reachable as a Recent Jobs card on the Upload screen
+5. Results survive closing the app, and every past job stays reachable as a Recent Jobs card on the Upload screen. Long-press a card to select, then download or delete several jobs at once — the same gesture and the same app bar the results grid uses
 
 ## Architecture
 

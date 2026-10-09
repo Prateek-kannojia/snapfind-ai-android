@@ -14,3 +14,19 @@ sealed interface UploadUiState {
     object Success : UploadUiState
     data class Error(val message: String) : UploadUiState
 }
+
+/**
+ * One-shot events the Upload screen reacts to once (snackbar, notification),
+ * kept out of [UploadUiState] so they don't re-fire on recomposition.
+ *
+ * The same shape as the results screen's own event, because it reports the
+ * same batch: see `SaveMatchedPhotosUseCase`, which both screens run.
+ */
+sealed interface UploadEvent {
+    data class BatchSaveCompleted(
+        val savedCount: Int,
+        val skippedCount: Int,
+        val failedCount: Int,
+        val lastSavedUri: android.net.Uri?,
+    ) : UploadEvent
+}

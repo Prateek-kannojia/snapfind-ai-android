@@ -1,5 +1,6 @@
 package com.example.snapfindai.presentation.screens.onboarding
 
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,6 +26,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Devices
 import androidx.compose.ui.tooling.preview.Preview
@@ -101,6 +103,32 @@ private fun Hero(modifier: Modifier = Modifier) {
     }
 }
 
+/**
+ * One state of the sheet: drawn when it is the current one, and otherwise
+ * measured and thrown away so it still contributes its height to the parent.
+ *
+ * [state] is taken only so Compose re-measures when it changes; the content
+ * decides for itself what to show.
+ */
+@Composable
+private fun SheetState(
+    state: OnboardingUiState,
+    visible: Boolean,
+    content: @Composable () -> Unit,
+) {
+    Box(
+        modifier = Modifier.layout { measurable, constraints ->
+            val placeable = measurable.measure(constraints)
+            layout(placeable.width, placeable.height) {
+                if (visible) placeable.placeRelative(0, 0)
+            }
+        },
+        contentAlignment = Alignment.TopCenter,
+    ) {
+        content()
+    }
+}
+
 @Composable
 private fun Sheet(
     modifier: Modifier = Modifier,
@@ -115,19 +143,51 @@ private fun Sheet(
             .fillMaxWidth()
             .clip(sheetShape)
             .background(MaterialTheme.colorScheme.surface)
+            // Belt and braces for the one case the Box below can't cover: if
+            // a state's own content changes height while it is showing, this
+            // glides instead of jumping.
+            .animateContentSize()
             .padding(horizontal = SnapFindSpacing.xl, vertical = SnapFindSpacing.xl),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        when (uiState) {
-            OnboardingUiState.ReadyToStart -> ReadyToStartContent(onStart = onStart)
-            is OnboardingUiState.Downloading ->
-                DownloadingContent(progress = uiState.progress, onCancel = onCancel, onPause = onPause)
+        // Every state is measured, one is placed. The sheet is therefore
+        // exactly as tall as its tallest state and never moves as the text
+        // under it changes -- a height that is *derived* rather than
+        // declared, so it survives translation, a longer error message and
+        // the user's font-scale setting without a number to keep in sync.
+        //
+        // The alternative, a fixed dp, is a guess that is wrong on the first
+        // phone that disagrees with it. Hiding the inactive states with
+        // alpha would size the box correctly too, but an invisible button
+        // still takes taps and still reads aloud to TalkBack; a child that
+        // is measured and not placed is neither drawn nor hit-testable.
+        Box(contentAlignment = Alignment.TopCenter) {
+            SheetState(uiState, visible = uiState is OnboardingUiState.ReadyToStart) {
+                ReadyToStartContent(onStart = onStart)
+            }
+            SheetState(uiState, visible = uiState is OnboardingUiState.Downloading) {
+                DownloadingContent(
+                    progress = (uiState as? OnboardingUiState.Downloading)?.progress ?: 0f,
+                    onCancel = onCancel,
+                    onPause = onPause,
+                )
+            }
             // Resume is onStart: continuing is the same call, because what
             // makes it a resume is the partial file, not a different request.
-            is OnboardingUiState.Paused ->
-                DownloadingContent(progress = uiState.progress, onCancel = onCancel, onResume = onStart)
-            is OnboardingUiState.Error -> ErrorContent(message = uiState.message, onRetry = onStart)
-            OnboardingUiState.Complete -> Unit // LaunchedEffect above navigates away
+            SheetState(uiState, visible = uiState is OnboardingUiState.Paused) {
+                DownloadingContent(
+                    progress = (uiState as? OnboardingUiState.Paused)?.progress ?: 0f,
+                    onCancel = onCancel,
+                    onResume = onStart,
+                )
+            }
+            SheetState(uiState, visible = uiState is OnboardingUiState.Error) {
+                ErrorContent(
+                    message = (uiState as? OnboardingUiState.Error)?.message.orEmpty(),
+                    onRetry = onStart,
+                )
+            }
+            // Complete places nothing: the LaunchedEffect above navigates away.
         }
     }
 }

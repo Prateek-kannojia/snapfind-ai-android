@@ -11,6 +11,9 @@ import androidx.work.WorkManager
 import com.example.snapfindai.domain.model.JobSummary
 import com.example.snapfindai.domain.usecase.DeleteJobUseCase
 import com.example.snapfindai.domain.usecase.GetJobHistoryUseCase
+import com.example.snapfindai.domain.usecase.GetJobUseCase
+import com.example.snapfindai.domain.usecase.PhotoSaveEvent
+import com.example.snapfindai.domain.usecase.SaveMatchedPhotosUseCase
 import com.example.snapfindai.utils.FileHelper
 import com.example.snapfindai.work.MatchPhotosWorker
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -42,6 +45,8 @@ import javax.inject.Inject
 class UploadViewModel @Inject constructor(
     private val getJobHistory: GetJobHistoryUseCase,
     private val deleteJob: DeleteJobUseCase,
+    private val getJob: GetJobUseCase,
+    private val saveMatchedPhotos: SaveMatchedPhotosUseCase,
     private val workManager: WorkManager,
 ) : ViewModel() {
 
@@ -77,6 +82,11 @@ class UploadViewModel @Inject constructor(
     // fires exactly once and is never re-derived from state afterward.
     private val _navigateToResults = MutableSharedFlow<Unit>()
     val navigateToResults: SharedFlow<Unit> = _navigateToResults.asSharedFlow()
+
+    // One-shot, like navigateToResults: a snackbar and a notification must
+    // fire once per batch, not again every time the screen recomposes.
+    private val _events = MutableSharedFlow<UploadEvent>()
+    val events: SharedFlow<UploadEvent> = _events.asSharedFlow()
 
     /**
      * A finished job's `WorkInfo` keeps being replayed to every new observer
@@ -218,16 +228,100 @@ class UploadViewModel @Inject constructor(
         refreshHistory() // picks up newly-saved/removed jobs when returning from Results
     }
 
+    // --- Selecting jobs ---
+
+    // Mirrors the results grid: long-press starts selecting, tapping toggles,
+    // and an empty set *is* "not selecting" rather than a second flag that
+    // could disagree with it.
+    private val _selectedJobs = MutableStateFlow<Set<Long>>(emptySet())
+    val selectedJobs: StateFlow<Set<Long>> = _selectedJobs.asStateFlow()
+
+    /**
+     * True while a batch download or delete is running, which disables both.
+     * They touch the same files -- deleting a job removes the very photos
+     * another batch may be mid-copy into the gallery -- so the dangerous
+     * combination isn't two downloads, it's a delete landing during one.
+     */
+    private val _operationInFlight = MutableStateFlow(false)
+    val operationInFlight: StateFlow<Boolean> = _operationInFlight.asStateFlow()
+
+    fun toggleJobSelected(jobId: Long) {
+        _selectedJobs.value = _selectedJobs.value.let { if (jobId in it) it - jobId else it + jobId }
+    }
+
+    fun clearSelection() {
+        _selectedJobs.value = emptySet()
+    }
+
     /**
      * Deletes a past job and the photos this app was storing for it. The
      * user's gallery is untouched -- see [DeleteJobUseCase].
      */
-    fun deleteJob(jobId: Long) {
+    fun deleteJob(jobId: Long) = deleteJobs(setOf(jobId))
+
+    fun deleteSelectedJobs() = deleteJobs(_selectedJobs.value)
+
+    private fun deleteJobs(jobIds: Set<Long>) {
+        if (jobIds.isEmpty() || _operationInFlight.value) return
+        _operationInFlight.value = true
         viewModelScope.launch {
-            deleteJob.invoke(jobId)
+            try {
+                jobIds.forEach { deleteJob.invoke(it) }
+            } finally {
+                // finally, so a failure part-way can't leave the screen
+                // permanently unable to delete or download anything.
+                _operationInFlight.value = false
+                clearSelection()
+            }
             refreshHistory()
         }
     }
+
+    /**
+     * Saves every matched photo of every selected job to the gallery.
+     *
+     * Deliberately not filtered to photos that aren't saved yet: saving is
+     * idempotent, so "download these jobs" does exactly what it says, and
+     * anything already there is counted as skipped rather than written twice.
+     */
+    fun downloadSelectedJobs() {
+        val jobIds = _selectedJobs.value
+        if (jobIds.isEmpty() || _operationInFlight.value) return
+        _operationInFlight.value = true
+        viewModelScope.launch {
+            // Read in the grid's own order, so a progress count moves through
+            // the jobs in the order the user sees them.
+            val matches = _jobHistory.value
+                .filter { it.id in jobIds }
+                .flatMap { getJob(it.id)?.matches.orEmpty() }
+
+            val outcome = try {
+                saveMatchedPhotos(matches) { event ->
+                    if (event is PhotoSaveEvent.Progress) {
+                        _batchProgress.value = event.completed to event.total
+                    }
+                }
+            } finally {
+                _batchProgress.value = null
+                _operationInFlight.value = false
+                clearSelection()
+            }
+
+            refreshHistory() // the saved ticks inside those jobs have moved
+            _events.emit(
+                UploadEvent.BatchSaveCompleted(
+                    savedCount = outcome.savedCount,
+                    skippedCount = outcome.skippedCount,
+                    failedCount = outcome.failedCount,
+                    lastSavedUri = outcome.lastSavedUri,
+                )
+            )
+        }
+    }
+
+    /** (completed, total) while a batch download runs, null otherwise. */
+    private val _batchProgress = MutableStateFlow<Pair<Int, Int>?>(null)
+    val batchProgress: StateFlow<Pair<Int, Int>?> = _batchProgress.asStateFlow()
 
     private fun refreshHistory() {
         viewModelScope.launch { _jobHistory.value = getJobHistory() }

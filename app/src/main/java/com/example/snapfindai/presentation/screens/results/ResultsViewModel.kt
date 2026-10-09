@@ -5,13 +5,13 @@ import android.util.Log
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.snapfindai.domain.model.UserFacingException
 import com.example.snapfindai.domain.model.FaceMatchResult
 import com.example.snapfindai.domain.usecase.GetJobUseCase
 import com.example.snapfindai.domain.usecase.GetLastJobUseCase
 import com.example.snapfindai.domain.usecase.ReconcileSavedPhotosUseCase
 import com.example.snapfindai.domain.usecase.RemoveMatchedPhotosUseCase
-import com.example.snapfindai.domain.usecase.SaveMatchedPhotoUseCase
+import com.example.snapfindai.domain.usecase.PhotoSaveEvent
+import com.example.snapfindai.domain.usecase.SaveMatchedPhotosUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -36,7 +36,7 @@ class ResultsViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val getLastJob: GetLastJobUseCase,
     private val getJob: GetJobUseCase,
-    private val saveMatchedPhoto: SaveMatchedPhotoUseCase,
+    private val saveMatchedPhotos: SaveMatchedPhotosUseCase,
     private val removeMatchedPhotos: RemoveMatchedPhotosUseCase,
     private val reconcileSavedPhotos: ReconcileSavedPhotosUseCase,
 ) : ViewModel() {
@@ -176,37 +176,33 @@ class ResultsViewModel @Inject constructor(
         updateLoaded { it.copy(operationInFlight = true, batchProgress = BatchProgress(0, targets.size)) }
 
         viewModelScope.launch {
-            var savedCount = 0
-            var skippedCount = 0
-            var failedCount = 0
-            var lastSavedUri: Uri? = null
-
-            try {
-                targets.forEachIndexed { index, match ->
-                    updateStatus(match, SaveStatus.Saving)
-                    saveMatchedPhoto(match).fold(
-                        onSuccess = { outcome ->
-                            if (outcome.alreadyExisted) skippedCount++ else savedCount++
-                            lastSavedUri = outcome.uri ?: lastSavedUri
-                            updateStatus(match, SaveStatus.Saved)
-                        },
-                        onFailure = { error ->
-                            failedCount++
-                            // Same rule as everywhere else: a message
-                            // written for the user is shown, an IOException's
-                            // own text is logged and replaced.
-                            val reason = (error as? UserFacingException)?.message
-                            if (reason == null) Log.w(TAG, "Couldn't save ${match.galleryName}", error)
-                            updateStatus(match, SaveStatus.Failed(reason ?: "Couldn't save this photo."))
-                        },
-                    )
-                    updateLoaded { it.copy(batchProgress = BatchProgress(index + 1, targets.size)) }
+            val outcome = try {
+                // The loop itself is shared with the job-history grid, which
+                // downloads whole jobs; what stays here is the part that is
+                // about this screen -- a tick per tile and a progress bar.
+                saveMatchedPhotos(targets) { event ->
+                    when (event) {
+                        is PhotoSaveEvent.Started -> updateStatus(event.match, SaveStatus.Saving)
+                        is PhotoSaveEvent.Saved -> updateStatus(event.match, SaveStatus.Saved)
+                        is PhotoSaveEvent.Failed -> updateStatus(event.match, SaveStatus.Failed(event.reason))
+                        is PhotoSaveEvent.Progress ->
+                            updateLoaded { it.copy(batchProgress = BatchProgress(event.completed, event.total)) }
+                    }
                 }
             } finally {
+                // finally, so a failure can't leave the screen permanently
+                // unable to save or remove anything.
                 updateLoaded { it.copy(batchProgress = null, operationInFlight = false, selectedPhotos = emptySet()) }
             }
 
-            _events.emit(ResultsEvent.BatchSaveCompleted(savedCount, skippedCount, failedCount, lastSavedUri))
+            _events.emit(
+                ResultsEvent.BatchSaveCompleted(
+                    savedCount = outcome.savedCount,
+                    skippedCount = outcome.skippedCount,
+                    failedCount = outcome.failedCount,
+                    lastSavedUri = outcome.lastSavedUri,
+                )
+            )
         }
     }
 

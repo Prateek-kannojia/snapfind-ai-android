@@ -1,13 +1,20 @@
 package com.example.snapfindai.presentation.screens.upload
 
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -27,13 +34,13 @@ import com.example.snapfindai.presentation.components.SnapFindButton
 import com.example.snapfindai.presentation.components.SnapFindButtonSlot
 import com.example.snapfindai.presentation.components.SnapFindButtonVariant
 import com.example.snapfindai.presentation.components.SnapFindPhotoCard
+import com.example.snapfindai.presentation.components.SnapFindSelectionIndicator
 import com.example.snapfindai.presentation.components.WavyProgressRing
+import com.example.snapfindai.presentation.util.rememberGallerySaveGate
+import com.example.snapfindai.utils.DownloadNotificationHelper
 import com.example.snapfindai.ui.theme.SnapFindAITheme
 import com.example.snapfindai.ui.theme.SnapFindSpacing
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 @Composable
 fun UploadScreen(
@@ -64,17 +71,53 @@ fun UploadScreen(
         viewModel.navigateToResults.collect { onNavigateToResults() }
     }
 
+    val selectedJobs by viewModel.selectedJobs.collectAsState()
+    val operationInFlight by viewModel.operationInFlight.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
+    val saveToGallery = rememberGallerySaveGate()
+
+    LaunchedEffect(Unit) {
+        viewModel.events.collect { event ->
+            when (event) {
+                is UploadEvent.BatchSaveCompleted -> {
+                    // Worded exactly as the results screen words it: saving is
+                    // idempotent, so "nothing new landed" is a normal outcome
+                    // and must not read as a failure.
+                    val message = when {
+                        event.failedCount > 0 && event.savedCount == 0 -> "Couldn't save ${event.failedCount} photo(s)"
+                        event.failedCount > 0 -> "${event.savedCount} saved, ${event.failedCount} failed"
+                        event.savedCount == 0 -> "Already in your gallery"
+                        event.skippedCount > 0 -> "${event.savedCount} saved, ${event.skippedCount} already in gallery"
+                        else -> "${event.savedCount} photo(s) saved"
+                    }
+                    snackbarHostState.showSnackbar(message)
+                    if (event.savedCount > 0 || event.failedCount > 0) {
+                        DownloadNotificationHelper.showCompleted(
+                            context, event.savedCount, event.failedCount, event.lastSavedUri,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     UploadContent(
         uiState = uiState,
         jobHistory = jobHistory,
         hasSelfie = selfieUri != null,
         hasZip = zipUri != null,
+        selectedJobs = selectedJobs,
+        operationInFlight = operationInFlight,
+        snackbarHostState = snackbarHostState,
         onChooseSelfie = { selfieLauncher.launch("image/*") },
         onChooseZip = { zipLauncher.launch("application/zip") },
         onSubmit = { viewModel.submitJob(context) },
         onCancel = { viewModel.cancelJob() },
         onOpenJob = onOpenJob,
-        onDeleteJob = { viewModel.deleteJob(it) },
+        onDeleteJobs = { viewModel.deleteSelectedJobs() },
+        onDownloadJobs = { saveToGallery { viewModel.downloadSelectedJobs() } },
+        onToggleJobSelected = { viewModel.toggleJobSelected(it) },
+        onClearSelection = { viewModel.clearSelection() },
     )
 }
 
@@ -84,18 +127,42 @@ private fun UploadContent(
     jobHistory: List<JobSummary>,
     hasSelfie: Boolean,
     hasZip: Boolean,
+    selectedJobs: Set<Long> = emptySet(),
+    operationInFlight: Boolean = false,
+    snackbarHostState: SnackbarHostState = remember { SnackbarHostState() },
     onChooseSelfie: () -> Unit,
     onChooseZip: () -> Unit,
     onSubmit: () -> Unit,
     onCancel: () -> Unit,
     onOpenJob: (Long) -> Unit,
-    onDeleteJob: (Long) -> Unit,
+    onDeleteJobs: () -> Unit = {},
+    onDownloadJobs: () -> Unit = {},
+    onToggleJobSelected: (Long) -> Unit = {},
+    onClearSelection: () -> Unit = {},
 ) {
-    // Which card's delete is being confirmed, if any. Held here rather than
-    // per card so only one dialog can ever be open.
-    var jobPendingDeletion by remember { mutableStateOf<JobSummary?>(null) }
+    // Set when the delete is confirmed rather than per card, so only one
+    // dialog can ever be open and it always describes the whole selection.
+    var confirmingDelete by remember { mutableStateOf(false) }
+    val selectionMode = selectedJobs.isNotEmpty()
 
-    Scaffold(containerColor = MaterialTheme.colorScheme.background) { paddingValues ->
+    // Disabled (and so inert) once nothing is selected, letting back behave
+    // normally again -- the same rule the results grid uses.
+    BackHandler(enabled = selectionMode) { onClearSelection() }
+
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        snackbarHost = { SnackbarHost(snackbarHostState) },
+        topBar = {
+            UploadHeader(
+                selectionMode = selectionMode,
+                selectedCount = selectedJobs.size,
+                operationInFlight = operationInFlight,
+                onClearSelection = onClearSelection,
+                onDownloadSelected = onDownloadJobs,
+                onDeleteSelected = { confirmingDelete = true },
+            )
+        },
+    ) { paddingValues ->
         val processingState = uiState as? UploadUiState.Processing
         if (processingState != null) {
             MatchingProgress(
@@ -166,46 +233,132 @@ private fun UploadContent(
                 Spacer(modifier = Modifier.height(SnapFindSpacing.sm))
                 JobHistoryGrid(
                     jobs = jobHistory,
+                    selectedJobs = selectedJobs,
+                    selectionMode = selectionMode,
                     onOpenJob = onOpenJob,
-                    onLongPressJob = { jobPendingDeletion = it },
+                    onToggleSelected = onToggleJobSelected,
                 )
             }
         }
     }
 
-    jobPendingDeletion?.let { job ->
-        DeleteJobDialog(
-            job = job,
+    if (confirmingDelete) {
+        val selected = jobHistory.filter { it.id in selectedJobs }
+        DeleteJobsDialog(
+            jobs = selected,
             onConfirm = {
-                jobPendingDeletion = null
-                onDeleteJob(job.id)
+                confirmingDelete = false
+                onDeleteJobs()
             },
-            onDismiss = { jobPendingDeletion = null },
+            onDismiss = { confirmingDelete = false },
         )
     }
 }
 
 /**
- * Spells out what a delete does and does not reach. The distinction is the
- * whole point: the app's own copies go, and anything the user downloaded is
- * theirs and stays in their gallery. Saying so here is what makes the action
- * safe to offer at all.
+ * States the whole cost before the tap, and the one guarantee that makes it
+ * tappable: the gallery is untouched. That is structural rather than careful
+ * -- `deleteJob` addresses this app's own storage and names no MediaStore
+ * path at all -- which is why it can be promised here.
  */
 @Composable
-private fun DeleteJobDialog(job: JobSummary, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+private fun DeleteJobsDialog(jobs: List<JobSummary>, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    val photoCount = jobs.sumOf { it.matchCount }
+    val freed = formatBytes(jobs.sumOf { it.sizeBytes })
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Delete this job?") },
+        title = { Text(if (jobs.size == 1) "Delete this job?" else "Delete ${jobs.size} jobs?") },
         text = {
             Text(
-                "This removes ${job.matchCount} matched photo${if (job.matchCount == 1) "" else "s"} " +
-                    "from the app, along with the record of what matched, and frees " +
-                    "${formatBytes(job.sizeBytes)}.\n\n" +
+                "This removes $photoCount matched photo${if (photoCount == 1) "" else "s"} " +
+                    "from the app, along with the record of what matched, and frees $freed.\n\n" +
                     "Photos you've already saved to your gallery stay there."
             )
         },
         confirmButton = { TextButton(onClick = onConfirm) { Text("Delete") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+/**
+ * The same two-bar arrangement as the results grid, for the same reason:
+ * selection *replaces* the default bar rather than adding to it, so no two
+ * sets of actions are ever on screen together.
+ */
+@Composable
+private fun UploadHeader(
+    selectionMode: Boolean,
+    selectedCount: Int,
+    operationInFlight: Boolean,
+    onClearSelection: () -> Unit,
+    onDownloadSelected: () -> Unit,
+    onDeleteSelected: () -> Unit,
+) {
+    AnimatedContent(
+        targetState = selectionMode,
+        transitionSpec = { fadeIn() togetherWith fadeOut() },
+        label = "upload-app-bar",
+    ) { selecting ->
+        if (selecting) {
+            UploadSelectionTopAppBar(
+                selectedCount = selectedCount,
+                operationInFlight = operationInFlight,
+                onClearSelection = onClearSelection,
+                onDownloadSelected = onDownloadSelected,
+                onDeleteSelected = onDeleteSelected,
+            )
+        } else {
+            UploadDefaultTopAppBar()
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun UploadDefaultTopAppBar() {
+    // No navigation icon: this is the root screen, and a back arrow here
+    // would offer to leave the app. No actions either -- there is no
+    // "download everything" that means anything across unrelated jobs.
+    TopAppBar(title = { Text("SnapFind AI") })
+}
+
+/**
+ * Close clears the selection, exactly as the results grid does, so the
+ * gesture to get out of selecting is the same on both screens.
+ *
+ * The download label stays the bare verb because the title already carries
+ * the count. Both actions are disabled together while anything runs: they
+ * touch the same files, and the dangerous combination isn't two downloads --
+ * it's a delete landing while photos are mid-copy into the gallery.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun UploadSelectionTopAppBar(
+    selectedCount: Int,
+    operationInFlight: Boolean,
+    onClearSelection: () -> Unit,
+    onDownloadSelected: () -> Unit,
+    onDeleteSelected: () -> Unit,
+) {
+    TopAppBar(
+        title = { Text("$selectedCount selected") },
+        navigationIcon = {
+            IconButton(onClick = onClearSelection) {
+                Icon(Icons.Default.Close, contentDescription = "Cancel selection")
+            }
+        },
+        actions = {
+            SnapFindButton(
+                text = "Download",
+                onClick = onDownloadSelected,
+                enabled = !operationInFlight,
+                variant = SnapFindButtonVariant.Tonal,
+                fillWidth = false,
+            )
+            IconButton(onClick = onDeleteSelected, enabled = !operationInFlight) {
+                Icon(Icons.Default.Delete, contentDescription = "Delete selected jobs")
+            }
+        },
     )
 }
 
@@ -238,8 +391,10 @@ private fun StepColumn(modifier: Modifier = Modifier, label: String, button: @Co
 @Composable
 private fun JobHistoryGrid(
     jobs: List<JobSummary>,
+    selectedJobs: Set<Long>,
+    selectionMode: Boolean,
     onOpenJob: (Long) -> Unit,
-    onLongPressJob: (JobSummary) -> Unit,
+    onToggleSelected: (Long) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(SnapFindSpacing.grid)) {
         jobs.chunked(2).forEach { rowJobs ->
@@ -248,8 +403,13 @@ private fun JobHistoryGrid(
                     JobHistoryCard(
                         modifier = Modifier.weight(1f),
                         job = job,
-                        onClick = { onOpenJob(job.id) },
-                        onLongClick = { onLongPressJob(job) },
+                        selectionMode = selectionMode,
+                        isSelected = job.id in selectedJobs,
+                        // While selecting, a tap toggles instead of opening --
+                        // the same rule as the results grid, so the gesture
+                        // doesn't change meaning between the two screens.
+                        onClick = { if (selectionMode) onToggleSelected(job.id) else onOpenJob(job.id) },
+                        onLongClick = { onToggleSelected(job.id) },
                     )
                 }
                 if (rowJobs.size == 1) {
@@ -334,17 +494,25 @@ private fun MatchingProgress(
 private fun JobHistoryCard(
     modifier: Modifier = Modifier,
     job: JobSummary,
+    selectionMode: Boolean,
+    isSelected: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
 ) {
-    // Portrait-leaning, not square -- matches the approved design's Recent
-    // Jobs card shape. Long-press to delete, the same gesture Results uses to
-    // start selecting, rather than a delete affordance on every card.
-    SnapFindPhotoCard(modifier = modifier, aspectRatio = 0.85f, onClick = onClick, onLongClick = onLongClick) {
+    // Squarer than it was: the card carried a timestamp line under the match
+    // count, and dropping that line left a tall card mostly showing crop.
+    // Long-press starts selecting, the same gesture the results grid uses.
+    SnapFindPhotoCard(
+        modifier = modifier,
+        aspectRatio = 1f,
+        selected = if (selectionMode) isSelected else null,
+        onClick = onClick,
+        onLongClick = onLongClick,
+    ) {
         if (job.previewPhoto != null) {
             AsyncImage(
                 model = job.previewPhoto,
-                contentDescription = "Job from ${formatJobTimestamp(job.timestamp)}",
+                contentDescription = "Job with ${job.matchCount} matched photos",
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),
             )
@@ -354,7 +522,19 @@ private fun JobHistoryCard(
             }
         }
 
-        Column(
+        if (selectionMode) {
+            SnapFindSelectionIndicator(
+                selected = isSelected,
+                modifier = Modifier.align(Alignment.TopStart).padding(SnapFindSpacing.xs),
+            )
+        }
+
+        // The match count alone. The time a job ran told the user nothing
+        // they could act on -- two jobs from the same afternoon are told
+        // apart by their photos, not their clocks -- and it cost a second
+        // line of chrome over the preview. The timestamp is still stored,
+        // and still orders this grid.
+        Box(
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .fillMaxWidth()
@@ -366,17 +546,9 @@ private fun JobHistoryCard(
                 color = Color.White,
                 style = MaterialTheme.typography.labelMedium,
             )
-            Text(
-                formatJobTimestamp(job.timestamp),
-                color = Color.White,
-                style = MaterialTheme.typography.labelSmall,
-            )
         }
     }
 }
-
-private fun formatJobTimestamp(timestamp: Long): String =
-    SimpleDateFormat("MMM d, h:mm a", Locale.getDefault()).format(Date(timestamp))
 
 // ---- Previews: Design > Split view in Android Studio, no build/install needed ----
 // Job/photo previewPhoto Files are fake paths -- Coil can't load them in a
@@ -401,7 +573,7 @@ private fun UploadIdleEmptyPreview() {
             jobHistory = emptyList(),
             hasSelfie = false,
             hasZip = false,
-            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {}, onDeleteJob = {},
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {}, 
         )
     }
 }
@@ -415,7 +587,7 @@ private fun UploadIdleReadyPreview() {
             jobHistory = previewJobs,
             hasSelfie = true,
             hasZip = true,
-            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {}, onDeleteJob = {},
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {}, 
         )
     }
 }
@@ -433,7 +605,7 @@ private fun UploadErrorPreview() {
             jobHistory = previewJobs,
             hasSelfie = true,
             hasZip = true,
-            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {}, onDeleteJob = {},
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {}, 
         )
     }
 }
@@ -447,7 +619,7 @@ private fun UploadMatchingIndeterminatePreview() {
             jobHistory = emptyList(),
             hasSelfie = true,
             hasZip = true,
-            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {}, onDeleteJob = {},
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {}, 
         )
     }
 }
@@ -461,7 +633,7 @@ private fun UploadMatchingProgressPreview() {
             jobHistory = emptyList(),
             hasSelfie = true,
             hasZip = true,
-            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {}, onDeleteJob = {},
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {}, 
         )
     }
 }
@@ -475,7 +647,7 @@ private fun UploadIdleDarkPreview() {
             jobHistory = previewJobs,
             hasSelfie = false,
             hasZip = false,
-            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {}, onDeleteJob = {},
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {}, 
         )
     }
 }
@@ -489,7 +661,7 @@ private fun UploadSmallPhonePreview() {
             jobHistory = previewJobs,
             hasSelfie = true,
             hasZip = true,
-            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {}, onDeleteJob = {},
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {}, 
         )
     }
 }
@@ -503,7 +675,7 @@ private fun UploadLargePhonePreview() {
             jobHistory = previewJobs,
             hasSelfie = true,
             hasZip = true,
-            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {}, onDeleteJob = {},
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {}, 
         )
     }
 }
