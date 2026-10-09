@@ -67,7 +67,7 @@ facesdk/           # standalone on-device face-matching SDK, sibling module
 |---|---|---|
 | `filesDir/facesdk_models/` | the two ONNX models (~16MB) | downloaded once, kept |
 | `filesDir/saved_matches/<jobId>/` | matched photos, one folder per job | until the job's matches are removed, or the job is deleted |
-| `filesDir/job_work/<requestId>/` | scratch for one run: its selfie, its ZIP, and the photos out of it that matched | deleted when that run ends; kept while the run can still resume; orphans swept at process start |
+| `filesDir/job_work/<requestId>/` | scratch for one run: its selfie, its ZIP, and the photos out of it that matched | the whole directory is deleted when that run ends; kept while the run can still resume; orphans swept at process start |
 | Room `snapfind.db` | job + match metadata only, never image bytes, plus how far a running job got | until app data is cleared |
 | `Pictures/SnapFindAI/` | photos the user downloaded | survives uninstall — these are theirs |
 

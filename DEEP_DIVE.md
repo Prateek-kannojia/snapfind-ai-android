@@ -219,7 +219,7 @@ A worker also checks whether its job still needs work before starting, because a
 
 ### A directory per request
 
-Every run owns `job_work/<requestId>/` — its selfie, its ZIP, and the photos out of that archive that matched — derived on both sides from the request id, so no path is ever passed around and a worker cannot be handed one belonging to another run.
+Every run owns `job_work/<requestId>/` — its selfie, its ZIP, and the photos out of that archive that matched — derived on both sides from the request id, so no path is ever passed around and a worker cannot be handed one belonging to another run. The worker removes that directory when the job ends, since it is the thing that created it; it deliberately does *not* do so in a `finally`, because a process killed mid-job must leave it exactly where it is for the next attempt to resume from.
 
 Runs previously shared `job_work/temp_selfie.jpg` and `temp_events.zip`, which was a real race rather than a theoretical one. **Cancelling a work request only records the cancellation; it does not wait for the worker to stop.** So a new run could overwrite a still-unwinding worker's inputs, and that worker's `finally` would then delete the *new* run's files. The window is widest exactly where it's least obvious: relocating hundreds of matched photos has no cancellation checks at all, so it can run for tens of seconds after a cancel.
 
@@ -230,6 +230,8 @@ Runs previously shared `job_work/temp_selfie.jpg` and `temp_events.zip`, which w
 The decision per leftover is **not a timeout**. "How old is this?" was only ever a proxy for a question that can be answered directly: *is the work request that owns this still live?* If it is, something is going to resume it and its files must be left strictly alone. If it isn't, nothing will ever pick it up.
 
 It's driven by directories rather than database rows, which matters twice. A run cancelled before its worker ever started has a directory but no row, and a row-driven sweep would never see it. And since a new run's request is live by definition, the sweep **structurally cannot touch it** — an earlier version took one liveness snapshot and then emptied the shared directory wholesale, which could destroy the inputs of a job started while it was running.
+
+Tested against a **real** WorkManager on an in-memory database (`work-testing`), not a stub. Its entire decision is a liveness question put to WorkManager, so a stub would answer the one thing under test and the test would be checking the stub. A request held `ENQUEUED` by an initial delay stands in for "something is still coming"; one run to completion by a synchronous executor stands in for "nothing is". Seven cases, and they validate each other: three assert a leftover *is* deleted, so if the sweep were a no-op those would fail rather than the survival cases passing for the wrong reason.
 
 ### Resuming instead of restarting
 
@@ -590,21 +592,23 @@ The original MVP checklist (Compose UI, Retrofit integration, Hilt DI, Coil imag
 
 **Nothing is unpacked (2026-10-09): done.** A 500MB archive cost about 1GB of writes and the same in peak storage; half of that bought nothing. Photos are now read out of the archive as they are scored, via `ZipFile` rather than a stream so the entry list and random access come free, and only the photos that match are written anywhere. The copy of the archive stays, because it is what makes a job independent of the network and of a picker grant that expires. Three things followed: `extractionComplete` was deleted along with the phase it guarded, the free-space precheck went with the writes it was predicting, and the zip-slip guard moved to naming the kept photos. See [Nothing is unpacked](#nothing-is-unpacked-the-write-that-bought-nothing).
 
+**The lifecycle is fully covered (2026-10-09): done.** `AbandonedJobSweeper` was the last untested piece, and the piece most able to do damage: it deletes a job's working files, so the question every test asks is whether it can ever delete something a job was coming back for. Seven cases against a real WorkManager, since a stub would have answered the liveness question the sweeper exists to ask.
+
 **Still open:**
 
 *Resource ceilings*
-- **The ZIP is still copied into app storage** — one write of the folder's size, now the only large one. It buys independence from an expiring picker grant and from a cloud-backed Uri that would otherwise be re-downloaded on every resumed attempt, so it is a deliberate keep rather than a leftover. A folder picker would remove the archive, and the copy with it.
+- **The ZIP is still copied into app storage** — one write of the folder's size, now the only large one, and deleted when the job ends. Two Android facts force it, both of them true for a purely local file: `ActivityResultContracts.GetContent()` issues a read grant scoped to the Activity, which is not persistable and does not survive the process death that resume exists for; and `java.util.zip.ZipFile` has only `File`/path constructors, so there is no stdlib way to hand it a `content://` Uri while keeping the random access the scored cursor depends on. Removing it needs *both* a switch to `OpenDocument()` + `takePersistableUriPermission` *and* an answer to the second — a `/proc/self/fd/<n>` path (works, undocumented, fails when a provider returns a pipe) or Apache Commons Compress's `ZipFile(SeekableByteChannel)`. A folder picker would remove the archive, and the copy with it.
 - **Peak memory is ~96MB per photo**, since the EXIF rotation holds a second full bitmap alongside the first. Per-photo, not cumulative, so folder size doesn't change it. Downsampling was tried and **rejected** — event photos have small faces in large frames, and reducing resolution measurably cost matching accuracy. A single-allocation decode (`ImageDecoder`, API 28+) would halve the peak without touching resolution, but it replaces a decoder validated pixel-for-pixel against `cv2.imread`, so it needs the alignment harness re-run.
 
 *Missing controls*
 - **The user has to zip the folder themselves** — there's no folder picker and no multi-select. The most-felt friction in real use.
-- **The no-matches error suggests a control that doesn't exist:** "try a clearer selfie or a higher threshold" — `submitJob` never passes a threshold, so it's always the default. `distance` and `JobEntity.threshold` are both persisted and never surfaced.
+- **`distance` and `JobEntity.threshold` are persisted and never surfaced.** Nothing passes a threshold, so every job runs at the default, and the per-photo distance behind a match is never shown. The no-matches message used to advertise "or a higher threshold" — a control the app has never had; that wording is gone, but the data behind it is still write-only.
 
 *Known limitations, accepted*
 - **Gallery-saved photos are duplicated, not aliased.** A saved match exists both as the app's internal `filesDir` copy (what the grid renders) and as a separate MediaStore copy. Android has no API to alias an arbitrary app-private file into MediaStore; the grid could instead load from the gallery `Uri` once saved and drop the internal copy — a storage-efficiency concern, not a correctness one.
 - **Reinstalling loses MediaStore ownership** of previously saved photos, so they read as un-downloaded and re-downloading produces `foo (1).jpg` duplicates.
 - **The tick only reconciles on resume** — no `ContentObserver`, so a gallery deletion in split-screen while Results is visible leaves it stale until the screen resumes.
-- **`AbandonedJobSweeper` is the one untested piece of the job lifecycle.** The app module has 22 tests across three classes (`:facesdk` has 41 across eight): DAO guards via `Room.inMemoryDatabaseBuilder`, the gallery reconcile, and the use case's resumption, naming and write behaviour. The sweeper is what's left, and it needs `work-testing` to stand up a fake WorkManager, since its whole decision is a liveness question put to it.
+- **Nothing in the job lifecycle is untested any more.** The app module has 29 tests across four classes (`:facesdk` has 41 across eight): DAO guards via `Room.inMemoryDatabaseBuilder`, the gallery reconcile, the use case's resumption, naming and write behaviour, and the sweeper against a real WorkManager. What is still untested is the UI layer, deliberately.
 - **Server-vs-on-device routing is an open question, not a decision.** `FaceMatchRepository` is shaped so a server-backed implementation could plug in later without touching the use case — but whether/when that's worth building is undecided, and the Retrofit path remains wired into Hilt with nothing calling it. See [Cross-project status](../Face_recognition/DEEP_DIVE.md#cross-project-status) in the backend's docs.
 
 Cross-project status (this app + the backend) is tracked in one place to avoid two docs drifting out of sync: see "Cross-project status" in `../Face_recognition/README.md`.

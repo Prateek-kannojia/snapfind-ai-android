@@ -94,6 +94,18 @@ class MatchPhotosWorker @AssistedInject constructor(
             )
             reporter.cancel()
 
+            // The use case clears the files it was handed; the directory
+            // itself belongs to this request, which created it, so it goes
+            // when the request is done. Without this an empty directory was
+            // left behind per completed job until the next process start
+            // swept it -- harmless, but it made `ls job_work` read as though
+            // finished jobs were still holding something.
+            //
+            // Deliberately not in a finally: a process killed mid-job must
+            // leave this directory exactly where it is, because that is what
+            // the next attempt resumes from.
+            workDir.deleteRecursively()
+
             outcome.fold(
                 onSuccess = { matches ->
                     MatchingNotifications.showCompleted(applicationContext, matches.size)

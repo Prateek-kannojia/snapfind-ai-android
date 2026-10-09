@@ -425,7 +425,11 @@ private fun UploadIdleReadyPreview() {
 private fun UploadErrorPreview() {
     SnapFindAITheme {
         UploadContent(
-            uiState = UploadUiState.Error("No matches found. Try a clearer selfie or a higher threshold."),
+            // Matches what the ViewModel actually emits. It used to offer "or
+            // a higher threshold", which named a control the app has never
+            // had -- a preview is where that kind of copy survives longest,
+            // because nothing fails when it drifts from the real string.
+            uiState = UploadUiState.Error("No matches found. Try a clearer selfie."),
             jobHistory = previewJobs,
             hasSelfie = true,
             hasZip = true,
