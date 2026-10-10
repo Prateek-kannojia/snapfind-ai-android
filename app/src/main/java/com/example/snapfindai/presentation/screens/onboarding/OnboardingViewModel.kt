@@ -35,7 +35,10 @@ class OnboardingViewModel @Inject constructor(
         // first progress callback can be a whole file away (an
         // already-finished model reports nothing at all), and a bar that
         // jumps backwards to 0% reads as "it threw my download away".
-        val resumeFrom = (_uiState.value as? OnboardingUiState.Paused)?.progress ?: 0f
+        // Null, not 0f, on a fresh start: nothing has been downloaded and
+        // nothing has been reported, which are different from "0% done" and
+        // should look different too.
+        val resumeFrom = (_uiState.value as? OnboardingUiState.Paused)?.progress
         downloadJob = viewModelScope.launch {
             _uiState.value = OnboardingUiState.Downloading(resumeFrom)
             try {
@@ -102,10 +105,14 @@ class OnboardingViewModel @Inject constructor(
      * outright and still be a pause rather than a restart.
      */
     fun pauseDownload() {
-        val progress = (_uiState.value as? OnboardingUiState.Downloading)?.progress ?: return
+        // Matched on the state, not on the progress value: progress is null
+        // while the request is still connecting, and `?: return` there would
+        // quietly refuse to pause exactly when a user on a bad connection
+        // most wants to.
+        val downloading = _uiState.value as? OnboardingUiState.Downloading ?: return
         downloadJob?.cancel()
         downloadJob = null
-        _uiState.value = OnboardingUiState.Paused(progress)
+        _uiState.value = OnboardingUiState.Paused(downloading.progress)
     }
 
     private companion object {

@@ -1,7 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.SnapFindAI" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.SnapFindAI" parent="android:Theme.Material.Light.NoActionBar">
+        <!-- The platform parent brings its own near-white window background
+             (#FAFAFA). The app draws edge to edge, so the window is what
+             shows through the status bar strip on any screen that has no app
+             bar painting over it: Upload and Results have one, Onboarding
+             does not, which is why only Onboarding showed a white band.
+             clay_background has a values-night variant, so this also stops a
+             white flash on a dark-mode launch. -->
+        <item name="android:windowBackground">@color/clay_background</item>
+        <!-- Transparent from the very first frame, rather than only once
+             enableEdgeToEdge() runs: the parent theme would otherwise paint
+             the bars for the moment before Compose exists. -->
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
 
     <!-- Shown by the system while AppStartupViewModel decides Onboarding vs.
          Upload: see MainActivity's installSplashScreen() call. Switches to

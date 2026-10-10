@@ -5,9 +5,10 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
@@ -48,6 +49,7 @@ fun SnapFindPhotoCard(
     selected: Boolean? = null,
     onClick: (() -> Unit)? = null,
     onLongClick: (() -> Unit)? = null,
+    footer: @Composable (ColumnScope.() -> Unit)? = null,
     content: @Composable BoxScope.() -> Unit,
 ) {
     // Both sides need disambiguating: inside the semantics lambda the bare
@@ -57,17 +59,48 @@ fun SnapFindPhotoCard(
     Card(
         modifier = modifier
             .fillMaxWidth()
-            .aspectRatio(aspectRatio)
-            .let { if (isSelected != null) it.semantics { this.selected = isSelected } else it }
-            .let {
+            .let { if (isSelected != null) it.semantics { this.selected = isSelected } else it },
+        shape = shape,
+        elevation = CardDefaults.cardElevation(defaultElevation = SnapFindDimens.elevation),
+    ) {
+        Column(
+            // The click lives *inside* the card, not on it, and that position
+            // is doing two jobs at once. A card clips its content to its
+            // shape, so a ripple started in here is rounded -- on the card's
+            // own modifier it drew to the node's rectangle and squared off
+            // the corners. And clipping the card itself to fix that would
+            // take the elevation shadow with it, since a shadow is drawn
+            // outside the shape it falls from.
+            modifier = Modifier.let {
                 if (onClick != null || onLongClick != null) {
                     it.combinedClickable(onClick = onClick ?: {}, onLongClick = onLongClick)
                 } else it
             },
-        shape = shape,
-        elevation = CardDefaults.cardElevation(defaultElevation = SnapFindDimens.elevation),
-    ) {
-        Box(modifier = Modifier.fillMaxSize(), content = content)
+        ) {
+            // The ratio moved off the card and onto the photo. With no footer
+            // the two are the same thing, so every tile that had one is
+            // untouched; with a footer, the photo keeps its proportions and
+            // the card grows by exactly the strip underneath.
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(aspectRatio),
+                content = content,
+            )
+            if (footer != null) {
+                // Painted `background`, the same colour as the screen and the
+                // app bar, so a card reads as a photo sitting on the page
+                // rather than a white panel stuck to it.
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.background)
+                        .padding(horizontal = SnapFindSpacing.md, vertical = SnapFindSpacing.sm),
+                    verticalArrangement = Arrangement.spacedBy(SnapFindSpacing.xs),
+                    content = footer,
+                )
+            }
+        }
     }
 }
 
@@ -89,7 +122,8 @@ private fun PhotoCardPreviewContent() {
             ) {
                 Box(
                     modifier = Modifier
-                        .fillMaxSize()
+                        .fillMaxWidth()
+                        .aspectRatio(1f)
                         .background(MaterialTheme.colorScheme.surfaceVariant)
                 )
                 SnapFindSelectionIndicator(

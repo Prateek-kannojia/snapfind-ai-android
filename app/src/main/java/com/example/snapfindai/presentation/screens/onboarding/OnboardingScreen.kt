@@ -27,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Devices
 import androidx.compose.ui.tooling.preview.Preview
@@ -39,6 +40,7 @@ import com.example.snapfindai.presentation.components.WavyProgressRing
 import com.example.snapfindai.ui.theme.SnapFindAITheme
 import com.example.snapfindai.ui.theme.SnapFindDimens
 import com.example.snapfindai.ui.theme.SnapFindSpacing
+import org.w3c.dom.Text
 
 @Composable
 fun OnboardingScreen(
@@ -161,13 +163,17 @@ private fun Sheet(
         // alpha would size the box correctly too, but an invisible button
         // still takes taps and still reads aloud to TalkBack; a child that
         // is measured and not placed is neither drawn nor hit-testable.
-        Box(contentAlignment = Alignment.TopCenter) {
+        // Centred, not top-aligned. The sheet is as tall as its tallest
+        // state, so a shorter one leaves room somewhere -- pinned to the top
+        // that room all fell under the button, which then floated with a gap
+        // beneath it instead of sitting in the sheet.
+        Box(contentAlignment = Alignment.Center) {
             SheetState(uiState, visible = uiState is OnboardingUiState.ReadyToStart) {
                 ReadyToStartContent(onStart = onStart)
             }
             SheetState(uiState, visible = uiState is OnboardingUiState.Downloading) {
                 DownloadingContent(
-                    progress = (uiState as? OnboardingUiState.Downloading)?.progress ?: 0f,
+                    progress = (uiState as? OnboardingUiState.Downloading)?.progress,
                     onCancel = onCancel,
                     onPause = onPause,
                 )
@@ -176,7 +182,7 @@ private fun Sheet(
             // makes it a resume is the partial file, not a different request.
             SheetState(uiState, visible = uiState is OnboardingUiState.Paused) {
                 DownloadingContent(
-                    progress = (uiState as? OnboardingUiState.Paused)?.progress ?: 0f,
+                    progress = (uiState as? OnboardingUiState.Paused)?.progress,
                     onCancel = onCancel,
                     onResume = onStart,
                 )
@@ -199,15 +205,13 @@ private fun ReadyToStartContent(onStart: () -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text(
-            "Welcome to SnapFind AI",
+            text = "Welcome to SnapFind AI",
             style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
             textAlign = TextAlign.Center
         )
         Text(
-            "SnapFind matches faces entirely on your device -- your photos never " +
-                    "leave your phone. To do that, it needs to download its face-matching " +
-                    "models once, about 16 MB. This needs an internet connection now; after " +
-                    "that, it works fully offline.",
+            "SnapFind matches faces entirely on your device. This needs an internet connection now after that, it works fully offline.",
             style = MaterialTheme.typography.bodyMedium,
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(top = SnapFindSpacing.sm),
@@ -228,32 +232,45 @@ private fun ReadyToStartContent(onStart: () -> Unit) {
  */
 @Composable
 private fun DownloadingContent(
-    progress: Float,
+    progress: Float?,
     onCancel: () -> Unit,
     onPause: (() -> Unit)? = null,
     onResume: (() -> Unit)? = null,
 ) {
     val paused = onResume != null
+    // Null progress means nothing has been reported yet -- still connecting,
+    // or a connection slow enough that no bytes have landed. There is no
+    // honest percentage to show, so none is shown: the heading drops the
+    // number and the ring goes indeterminate, which keeps moving. A ring
+    // sitting at a motionless 0% was the thing that read as a hung app.
+    val percent = progress?.let { "${(it * 100).toInt()}%" }
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(
-            if (paused) "Paused · ${(progress * 100).toInt()}%"
-            else "Downloading · ${(progress * 100).toInt()}%",
-            style = MaterialTheme.typography.titleMedium
+            when {
+                paused && percent != null -> "Paused · $percent"
+                paused -> "Paused"
+                percent != null -> "Downloading · $percent"
+                else -> "Connecting…"
+            },
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
         )
         Text(
-            if (paused) "Resume when you're ready -- it picks up from here, " +
-                "not from the beginning."
-            else "Please wait until the on-device models finish downloading.",
+            when {
+                paused -> "Resume when you're ready."
+                percent != null -> "Please wait until the on-device models finish downloading."
+                else -> "Reaching the server. This needs a connection the first time only."
+            },
             style = MaterialTheme.typography.bodySmall,
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(
                 top = SnapFindSpacing.xs,
-                bottom = SnapFindSpacing.xs
+                bottom = SnapFindSpacing.xs,
             ),
         )
         WavyProgressRing(
             progress = progress,
-            label = "${(progress * 100).toInt()}%",
+            label = percent,
             modifier = Modifier.padding(vertical = SnapFindSpacing.sm),
         )
         SnapFindButtonSlot(modifier = Modifier.padding(top = SnapFindSpacing.md)) {
@@ -275,14 +292,24 @@ private fun DownloadingContent(
 
 @Composable
 private fun ErrorContent(message: String, onRetry: () -> Unit) {
-    Text(
-        message,
-        color = MaterialTheme.colorScheme.error,
-        textAlign = TextAlign.Center,
-        style = MaterialTheme.typography.bodyMedium,
-    )
-    SnapFindButtonSlot(modifier = Modifier.padding(top = SnapFindSpacing.lg)) {
-        SnapFindButton(text = "Retry", onClick = onRetry)
+    // A Column, like every other state here. Without one this emitted two
+    // siblings into the sheet's Box, which stacks rather than lists -- so the
+    // message and the Retry button drew on top of each other and the padding
+    // between them had nothing to push against.
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            message,
+            color = MaterialTheme.colorScheme.error,
+            textAlign = TextAlign.Center,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Bold,
+        )
+        SnapFindButtonSlot(modifier = Modifier.padding(top = SnapFindSpacing.lg)) {
+            SnapFindButton(text = "Retry", onClick = onRetry)
+        }
     }
 }
 

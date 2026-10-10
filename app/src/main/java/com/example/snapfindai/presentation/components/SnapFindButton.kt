@@ -17,6 +17,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -45,6 +46,11 @@ private val ButtonBorderWidth = 1.5.dp
  * exact height, and `widthIn(max = ...)` stops a full-width button from
  * stretching edge-to-edge on a wide screen while still following its
  * container's width on a phone.
+ *
+ * [contentColor] overrides the variant's own label colour, for the actions
+ * the design accents -- downloading photos, and the icons beside it. Null
+ * keeps the variant's pairing, which is what nearly every button wants: an
+ * accent that appears on every button is not an accent.
  */
 @Composable
 fun SnapFindButton(
@@ -54,6 +60,7 @@ fun SnapFindButton(
     enabled: Boolean = true,
     variant: SnapFindButtonVariant = SnapFindButtonVariant.Primary,
     fillWidth: Boolean = true,
+    contentColor: Color? = null,
 ) {
     val sizing = modifier
         .let { if (fillWidth) it.fillMaxWidth() else it }
@@ -85,7 +92,7 @@ fun SnapFindButton(
             shape = ClayPillShape,
             colors = ButtonDefaults.buttonColors(
                 containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                contentColor = MaterialTheme.colorScheme.onSurface,
+                contentColor = contentColor ?: MaterialTheme.colorScheme.onSurface,
             ),
             elevation = elevation,
             contentPadding = ButtonContentPadding,

@@ -12,6 +12,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -41,6 +45,13 @@ fun WavyProgressRing(
     modifier: Modifier = Modifier,
     size: Dp = 104.dp,
 ) {
+    // Weight carried through from the stroke to the label: a bold figure
+    // inside a hairline ring reads as two unrelated things sharing a space.
+    // One stroke for both the ring and its track, so the unfilled part is the
+    // same weight as the filled part rather than a thinner ghost of it.
+    val stroke = with(LocalDensity.current) {
+        Stroke(width = SnapFindDimens.progressStroke.toPx(), cap = StrokeCap.Round)
+    }
     Box(modifier = modifier.size(size), contentAlignment = Alignment.Center) {
         if (progress != null) {
             CircularWavyProgressIndicator(
@@ -48,16 +59,25 @@ fun WavyProgressRing(
                 modifier = Modifier.size(size),
                 color = MaterialTheme.colorScheme.primary,
                 trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                stroke = stroke,
+                trackStroke = stroke,
             )
         } else {
             CircularWavyProgressIndicator(
                 modifier = Modifier.size(size),
                 color = MaterialTheme.colorScheme.primary,
                 trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                stroke = stroke,
+                trackStroke = stroke,
             )
         }
         if (label != null) {
-            Text(label, style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurface)
+            Text(
+                label,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
         }
     }
 }

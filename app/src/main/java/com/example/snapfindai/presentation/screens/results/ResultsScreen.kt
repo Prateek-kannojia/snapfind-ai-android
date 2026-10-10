@@ -44,8 +44,10 @@ import com.example.snapfindai.presentation.components.SnapFindButton
 import com.example.snapfindai.presentation.components.SnapFindButtonVariant
 import com.example.snapfindai.presentation.components.SnapFindPhotoCard
 import com.example.snapfindai.presentation.components.SnapFindSelectionIndicator
+import com.example.snapfindai.presentation.components.SnapFindSnackbarHost
 import com.example.snapfindai.presentation.components.SnapFindStatusBadge
 import com.example.snapfindai.presentation.components.WavyProgressRing
+import com.example.snapfindai.presentation.components.SnapFindTopAppBar
 import com.example.snapfindai.presentation.util.rememberGallerySaveGate
 import com.example.snapfindai.ui.theme.SnapFindAITheme
 import com.example.snapfindai.ui.theme.SnapFindDimens
@@ -155,7 +157,7 @@ private fun ResultsContent(
     BackHandler(enabled = selectionMode) { onClearSelection() }
 
     Scaffold(
-        snackbarHost = { SnackbarHost(snackbarHostState) },
+        snackbarHost = { SnapFindSnackbarHost(snackbarHostState) },
         topBar = {
             ResultsHeader(
                 selectionMode = selectionMode,
@@ -245,12 +247,6 @@ private fun ResultsContent(
     }
 }
 
-private val ResultsTitleStyle: @Composable () -> androidx.compose.ui.text.TextStyle = {
-    // Matches the reference exactly: bold, 15sp -- titleMedium's own
-    // weight/size (Medium/16sp) were only approximately right.
-    MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, fontSize = 15.sp)
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ResultsHeader(
@@ -299,8 +295,8 @@ private fun DefaultTopAppBar(
     onBack: () -> Unit,
     onSaveAll: () -> Unit,
 ) {
-    TopAppBar(
-        title = { Text("Your Matches", style = ResultsTitleStyle()) },
+    SnapFindTopAppBar(
+        title = "Your Matches",
         navigationIcon = {
             IconButton(onClick = onBack) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -320,6 +316,7 @@ private fun DefaultTopAppBar(
                     enabled = notSavedCount > 0 && !operationInFlight,
                     variant = SnapFindButtonVariant.Tonal,
                     fillWidth = false,
+                    contentColor = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(end = SnapFindSpacing.sm),
                 )
             }
@@ -344,8 +341,8 @@ private fun SelectionTopAppBar(
     onSaveSelected: () -> Unit,
     onRemoveSelected: () -> Unit,
 ) {
-    TopAppBar(
-        title = { Text("$selectedCount selected", style = ResultsTitleStyle()) },
+    SnapFindTopAppBar(
+        title = "$selectedCount selected",
         navigationIcon = {
             IconButton(onClick = onClearSelection) {
                 Icon(Icons.Default.Close, contentDescription = "Cancel selection")
@@ -362,9 +359,14 @@ private fun SelectionTopAppBar(
                 enabled = !operationInFlight,
                 variant = SnapFindButtonVariant.Tonal,
                 fillWidth = false,
+                contentColor = MaterialTheme.colorScheme.primary,
             )
             IconButton(onClick = onRemoveSelected, enabled = !operationInFlight) {
-                Icon(Icons.Default.Delete, contentDescription = "Remove selected from matches")
+                Icon(
+                    Icons.Default.Delete,
+                    contentDescription = "Remove selected from matches",
+                    tint = MaterialTheme.colorScheme.primary,
+                )
             }
         },
     )

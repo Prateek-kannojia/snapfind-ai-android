@@ -142,11 +142,16 @@ class UploadViewModel @Inject constructor(
                         )
                     }
 
-                    // Cancelling already put the screen back to Idle. Handled
-                    // here too so a cancel from anywhere else -- a future
-                    // notification action, say -- lands in the same place.
+                    // The screen's own Cancel already did both of these.
+                    // Repeated here because this branch is what runs when the
+                    // cancel came from somewhere else -- a notification
+                    // action, a replacing job, a cancel while the app was
+                    // closed -- and clearing only the state left the step
+                    // buttons still reading "Selected" for a job that no
+                    // longer exists.
                     WorkInfo.State.CANCELLED -> onceFor(info.id) {
                         _uiState.value = UploadUiState.Idle
+                        clearPickedFiles()
                     }
                 }
             }
@@ -254,11 +259,9 @@ class UploadViewModel @Inject constructor(
     }
 
     /**
-     * Deletes a past job and the photos this app was storing for it. The
-     * user's gallery is untouched -- see [DeleteJobUseCase].
+     * Deletes the selected jobs and the photos this app was storing for them.
+     * The user's gallery is untouched -- see [DeleteJobUseCase].
      */
-    fun deleteJob(jobId: Long) = deleteJobs(setOf(jobId))
-
     fun deleteSelectedJobs() = deleteJobs(_selectedJobs.value)
 
     private fun deleteJobs(jobIds: Set<Long>) {

@@ -8,10 +8,10 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -20,9 +20,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Devices
 import androidx.compose.ui.tooling.preview.Preview
@@ -35,6 +35,8 @@ import com.example.snapfindai.presentation.components.SnapFindButtonSlot
 import com.example.snapfindai.presentation.components.SnapFindButtonVariant
 import com.example.snapfindai.presentation.components.SnapFindPhotoCard
 import com.example.snapfindai.presentation.components.SnapFindSelectionIndicator
+import com.example.snapfindai.presentation.components.SnapFindSnackbarHost
+import com.example.snapfindai.presentation.components.SnapFindTopAppBar
 import com.example.snapfindai.presentation.components.WavyProgressRing
 import com.example.snapfindai.presentation.util.rememberGallerySaveGate
 import com.example.snapfindai.utils.DownloadNotificationHelper
@@ -121,6 +123,7 @@ fun UploadScreen(
     )
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun UploadContent(
     uiState: UploadUiState,
@@ -151,7 +154,7 @@ private fun UploadContent(
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
-        snackbarHost = { SnackbarHost(snackbarHostState) },
+        snackbarHost = { SnapFindSnackbarHost(snackbarHostState) },
         topBar = {
             UploadHeader(
                 selectionMode = selectionMode,
@@ -173,27 +176,32 @@ private fun UploadContent(
             return@Scaffold
         }
 
-        // The whole form + Recent Jobs scrolls together as one screen,
-        // rather than only the grid scrolling inside a weight(1f) region --
-        // that's also why Recent Jobs below is a plain wrapping grid, not a
-        // LazyVerticalGrid (which needs a separately bounded height to
-        // coexist with an outer scroll container).
+        // The form stays put and only the jobs scroll. The two were one
+        // scrolling surface before, which read as the whole screen sliding
+        // away to reach a grid -- the controls you came to use shouldn't
+        // leave the screen to look at what you made with them.
+        //
+        // That split is also what lets the grid be lazy: it takes the height
+        // the form leaves (`weight(1f)`), and a bounded height is exactly
+        // what a vertically scrolling grid needs. Inside an outer scroll it
+        // would be measured with unbounded height and throw, which is why
+        // this used to be a hand-wrapped grid that composed every job at
+        // once.
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
                 .padding(paddingValues)
-                .padding(SnapFindSpacing.screenHorizontal),
+                .padding(horizontal = SnapFindSpacing.screenHorizontal),
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(SnapFindSpacing.md)) {
-                StepColumn(modifier = Modifier.weight(1f), label = "Step 1") {
+                StepColumn(modifier = Modifier.weight(1f), label = "STEP 1") {
                     SnapFindButton(
                         text = if (!hasSelfie) "Choose Selfie" else "Selected",
                         onClick = onChooseSelfie,
                         variant = SnapFindButtonVariant.Tonal,
                     )
                 }
-                StepColumn(modifier = Modifier.weight(1f), label = "Step 2") {
+                StepColumn(modifier = Modifier.weight(1f), label = "STEP 2") {
                     SnapFindButton(
                         text = if (!hasZip) "Choose ZIP" else "Selected",
                         onClick = onChooseZip,
@@ -204,7 +212,7 @@ private fun UploadContent(
 
             Spacer(modifier = Modifier.height(SnapFindSpacing.xl))
 
-            SnapFindButton(text = "Find My Photos!", onClick = onSubmit, enabled = hasSelfie && hasZip)
+            SnapFindButton(text = "Find My Photos", onClick = onSubmit, enabled = hasSelfie && hasZip)
 
             if (uiState is UploadUiState.Error) {
                 Spacer(modifier = Modifier.height(SnapFindSpacing.lg))
@@ -212,13 +220,18 @@ private fun UploadContent(
             }
 
             if (jobHistory.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(SnapFindSpacing.section))
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = SnapFindSpacing.section, bottom = SnapFindSpacing.xs),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text("Recent Jobs", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Recent Jobs",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
                     // The cost of keeping these, stated where the user can see
                     // it. Each job holds a full-resolution copy of every photo
                     // it matched, and without a number on screen there is no
@@ -230,14 +243,33 @@ private fun UploadContent(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                Spacer(modifier = Modifier.height(SnapFindSpacing.sm))
-                JobHistoryGrid(
-                    jobs = jobHistory,
-                    selectedJobs = selectedJobs,
-                    selectionMode = selectionMode,
-                    onOpenJob = onOpenJob,
-                    onToggleSelected = onToggleJobSelected,
-                )
+
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(2),
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    contentPadding = PaddingValues(bottom = SnapFindSpacing.lg),
+                    horizontalArrangement = Arrangement.spacedBy(SnapFindSpacing.grid),
+                    verticalArrangement = Arrangement.spacedBy(SnapFindSpacing.grid),
+                ) {
+                    // Keyed by job id, so scrolling away and back reuses a
+                    // card rather than rebuilding it, and deleting one does
+                    // not shuffle every card after it onto a different slot.
+                    items(jobHistory, key = { it.id }) { job ->
+                        JobHistoryCard(
+                            job = job,
+                            selectionMode = selectionMode,
+                            isSelected = job.id in selectedJobs,
+                            // While selecting, a tap toggles instead of
+                            // opening -- the same rule as the results grid, so
+                            // the gesture doesn't change meaning between the
+                            // two screens.
+                            onClick = {
+                                if (selectionMode) onToggleJobSelected(job.id) else onOpenJob(job.id)
+                            },
+                            onLongClick = { onToggleJobSelected(job.id) },
+                        )
+                    }
+                }
             }
         }
     }
@@ -319,7 +351,7 @@ private fun UploadDefaultTopAppBar() {
     // No navigation icon: this is the root screen, and a back arrow here
     // would offer to leave the app. No actions either -- there is no
     // "download everything" that means anything across unrelated jobs.
-    TopAppBar(title = { Text("SnapFind AI") })
+    SnapFindTopAppBar(title = "SnapFind AI")
 }
 
 /**
@@ -340,8 +372,8 @@ private fun UploadSelectionTopAppBar(
     onDownloadSelected: () -> Unit,
     onDeleteSelected: () -> Unit,
 ) {
-    TopAppBar(
-        title = { Text("$selectedCount selected") },
+    SnapFindTopAppBar(
+        title = "$selectedCount selected",
         navigationIcon = {
             IconButton(onClick = onClearSelection) {
                 Icon(Icons.Default.Close, contentDescription = "Cancel selection")
@@ -354,9 +386,14 @@ private fun UploadSelectionTopAppBar(
                 enabled = !operationInFlight,
                 variant = SnapFindButtonVariant.Tonal,
                 fillWidth = false,
+                contentColor = MaterialTheme.colorScheme.primary,
             )
             IconButton(onClick = onDeleteSelected, enabled = !operationInFlight) {
-                Icon(Icons.Default.Delete, contentDescription = "Delete selected jobs")
+                Icon(
+                    Icons.Default.Delete,
+                    contentDescription = "Delete selected jobs",
+                    tint = MaterialTheme.colorScheme.primary,
+                )
             }
         },
     )
@@ -387,44 +424,6 @@ private fun StepColumn(modifier: Modifier = Modifier, label: String, button: @Co
  * a bunch of space whether or not there's content for it" problem this is
  * fixing. If Recent Jobs ever needs to show many dozens of jobs, that's
  * the point to reintroduce a properly height-constrained Lazy grid.
- */
-@Composable
-private fun JobHistoryGrid(
-    jobs: List<JobSummary>,
-    selectedJobs: Set<Long>,
-    selectionMode: Boolean,
-    onOpenJob: (Long) -> Unit,
-    onToggleSelected: (Long) -> Unit,
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(SnapFindSpacing.grid)) {
-        jobs.chunked(2).forEach { rowJobs ->
-            Row(horizontalArrangement = Arrangement.spacedBy(SnapFindSpacing.grid)) {
-                rowJobs.forEach { job ->
-                    JobHistoryCard(
-                        modifier = Modifier.weight(1f),
-                        job = job,
-                        selectionMode = selectionMode,
-                        isSelected = job.id in selectedJobs,
-                        // While selecting, a tap toggles instead of opening --
-                        // the same rule as the results grid, so the gesture
-                        // doesn't change meaning between the two screens.
-                        onClick = { if (selectionMode) onToggleSelected(job.id) else onOpenJob(job.id) },
-                        onLongClick = { onToggleSelected(job.id) },
-                    )
-                }
-                if (rowJobs.size == 1) {
-                    Spacer(modifier = Modifier.weight(1f))
-                }
-            }
-        }
-    }
-}
-
-/**
- * Shown while FindFacesInPhotosUseCase is unzipping + scoring photos.
- * [state]'s scored/total are null until the first photo finishes scoring
- * (unzip + selfie embedding happen first) -- an indeterminate ring until
- * then, never a fabricated count.
  */
 @Composable
 private fun MatchingProgress(
@@ -477,12 +476,15 @@ private fun MatchingProgress(
         // A real event folder takes minutes, so this screen can't be a
         // one-way door. Tonal rather than primary: stopping is the secondary
         // action here, the job itself is the point.
+        // Full width, like every other Cancel in the app. Sized to its own
+        // text it came out noticeably smaller than the one on the onboarding
+        // sheet, which made the same action look like a different, lesser one
+        // depending on the screen it was on.
         SnapFindButtonSlot(modifier = Modifier.padding(top = SnapFindSpacing.xl)) {
             SnapFindButton(
                 text = "Cancel",
                 onClick = onCancel,
                 variant = SnapFindButtonVariant.Tonal,
-                fillWidth = false,
             )
         }
 
@@ -499,8 +501,11 @@ private fun JobHistoryCard(
     onClick: () -> Unit,
     onLongClick: () -> Unit,
 ) {
-    // Squarer than it was: the card carried a timestamp line under the match
-    // count, and dropping that line left a tall card mostly showing crop.
+    // The photo stays square and the details sit on the card's own surface
+    // below it, rather than in a scrim floated over the bottom of the image.
+    // A scrim has to darken whatever happens to be under it, so it is either
+    // too heavy for a pale photo or too weak for a busy one; a strip of the
+    // card is legible against every photo because it is not over one.
     // Long-press starts selecting, the same gesture the results grid uses.
     SnapFindPhotoCard(
         modifier = modifier,
@@ -508,6 +513,23 @@ private fun JobHistoryCard(
         selected = if (selectionMode) isSelected else null,
         onClick = onClick,
         onLongClick = onLongClick,
+        footer = {
+            Text(
+                "${job.matchCount} photo${if (job.matchCount == 1) "" else "s"}",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontWeight = FontWeight.Bold
+            )
+            // What this job is costing, on the line the timestamp used to
+            // take. The heading above the grid gives the total; this says
+            // which job the total is mostly made of, which is the thing a
+            // user deciding what to delete actually needs.
+            Text(
+                formatBytes(job.sizeBytes),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        },
     ) {
         if (job.previewPhoto != null) {
             AsyncImage(
@@ -529,24 +551,6 @@ private fun JobHistoryCard(
             )
         }
 
-        // The match count alone. The time a job ran told the user nothing
-        // they could act on -- two jobs from the same afternoon are told
-        // apart by their photos, not their clocks -- and it cost a second
-        // line of chrome over the preview. The timestamp is still stored,
-        // and still orders this grid.
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .fillMaxWidth()
-                .background(Color.Black.copy(alpha = 0.5f))
-                .padding(horizontal = SnapFindSpacing.sm, vertical = SnapFindSpacing.xs),
-        ) {
-            Text(
-                "${job.matchCount} photo${if (job.matchCount == 1) "" else "s"}",
-                color = Color.White,
-                style = MaterialTheme.typography.labelMedium,
-            )
-        }
     }
 }
 

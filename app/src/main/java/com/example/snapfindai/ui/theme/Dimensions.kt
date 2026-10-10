@@ -17,6 +17,12 @@ object SnapFindDimens {
     val selectionIndicatorSize = 28.dp
     /** A waiting ring standing in for an icon in an action slot (saving the photo you're viewing) -- small enough to leave the slot's footprint unchanged, large enough for the scallops to still read. */
     val actionProgressSize = 24.dp
+    /** A floating toolbar's actions sit alone over a photo with nothing around them to lend scale, so they are drawn larger than an app bar's -- at a bar's size they read as something small that drifted onto the image. */
+    val toolbarAction = 56.dp
+    /** The glyph inside [toolbarAction]: Material's 24dp icon looks lost in a 56dp target. */
+    val toolbarIcon = 28.dp
+    /** The wavy progress ring's stroke. Material's own default is thin enough that the scallops read as a hairline next to the bold figure inside the ring; this is the weight that matches it. */
+    val progressStroke = 7.dp
     /** Shared across every raised surface (buttons, the pause FAB, photo cards) so they all read as the same amount "off the page" -- Material 3's own Level2 elevation token (3dp), not a number picked to match one screenshot. */
     val elevation = 3.dp
 }
