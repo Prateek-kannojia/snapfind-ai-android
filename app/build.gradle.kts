@@ -38,6 +38,10 @@ android {
     }
     buildFeatures {
         compose = true
+        // For BuildConfig.DEBUG, which gates the dev job seeder. A compile-time
+        // constant rather than a runtime flag check, so R8 drops the branch --
+        // and the seeder it refers to -- out of a release build entirely.
+        buildConfig = true
     }
     testOptions {
         // Robolectric needs the merged resources and manifest to stand up a

@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.os.Build
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
+import com.example.snapfindai.dev.DevDataSeeder
 import com.example.snapfindai.utils.DownloadNotificationHelper
 import com.example.snapfindai.utils.MatchingNotifications
 import com.example.snapfindai.work.AbandonedJobSweeper
@@ -38,10 +39,33 @@ class SnapFindApplication : Application(), Configuration.Provider {
 
     @Inject lateinit var abandonedJobSweeper: AbandonedJobSweeper
 
+    @Inject lateinit var devDataSeeder: DevDataSeeder
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannels()
         sweepAbandonedJobs()
+        seedDevDataInDebugBuilds()
+    }
+
+    /**
+     * Gives a debug install a job history to work with, so the screens that
+     * only exist after a job can be changed without running one first.
+     *
+     * [BuildConfig.DEBUG] is a compile-time constant, so this whole branch --
+     * and, with nothing else referring to it, [DevDataSeeder] itself -- is
+     * removed from a release build rather than merely never reached.
+     *
+     * After the sweep, not before: the sweeper's second pass abandons jobs
+     * left running with no work behind them, and seeded jobs are complete,
+     * so the order only matters for not racing the same database on two
+     * coroutines at startup.
+     */
+    private fun seedDevDataInDebugBuilds() {
+        if (!BuildConfig.DEBUG) return
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            runCatching { devDataSeeder.seedIfEmpty() }
+        }
     }
 
     /**
