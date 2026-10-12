@@ -65,7 +65,7 @@ fun ResultsScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
 
-    val saveToGallery = rememberGallerySaveGate()
+    val saveToGallery = rememberGallerySaveGate(snackbarHostState)
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -106,6 +106,8 @@ fun ResultsScreen(
                         DownloadNotificationHelper.showCompleted(context, event.savedCount, event.failedCount, event.lastSavedUri)
                     }
                 }
+
+                is ResultsEvent.Message -> snackbarHostState.showSnackbar(event.text)
             }
         }
     }
@@ -214,6 +216,14 @@ private fun ResultsContent(
                                     item = item,
                                     selectionMode = state.selectionMode,
                                     isSelected = item.match.photo in state.selectedPhotos,
+                                    // The same rule the app bar and the FAB
+                                    // already follow, which the grid wasn't.
+                                    // Left live, a tap during a removal opened
+                                    // the viewer on a photo being deleted, and
+                                    // a tap during a save changed a selection
+                                    // that saveBatch's own cleanup then
+                                    // silently discarded.
+                                    enabled = !state.operationInFlight,
                                     onSaveClick = { onSaveToGallery(item.match) },
                                     onClick = { if (state.selectionMode) onToggleSelected(item.match.photo) else onPhotoClick(state.jobId, item.match.photo.absolutePath) },
                                     onLongClick = { onToggleSelected(item.match.photo) },
@@ -412,12 +422,15 @@ private fun MatchCard(
     item: MatchItemState,
     selectionMode: Boolean,
     isSelected: Boolean,
+    /** False while a batch save or a removal is running -- see [SnapFindPhotoCard]. */
+    enabled: Boolean,
     onSaveClick: () -> Unit,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
 ) {
     SnapFindPhotoCard(
         selected = if (selectionMode) isSelected else null,
+        enabled = enabled,
         onClick = onClick,
         onLongClick = onLongClick,
     ) {
@@ -445,7 +458,7 @@ private fun MatchCard(
                 }
                 is SaveStatus.Failed -> {
                     SnapFindFailedBadge(
-                        modifier = badgeModifier.clickable(onClick = onSaveClick),
+                        modifier = badgeModifier.clickable(enabled = enabled, onClick = onSaveClick),
                     )
                 }
                 SaveStatus.Idle -> Unit

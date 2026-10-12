@@ -9,13 +9,11 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -33,7 +31,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Devices
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.example.snapfindai.presentation.components.SnapFindButton
 import com.example.snapfindai.presentation.components.SnapFindButtonSlot
@@ -41,6 +38,7 @@ import com.example.snapfindai.presentation.components.SnapFindButtonVariant
 import com.example.snapfindai.presentation.components.SnapFindMark
 import com.example.snapfindai.presentation.components.SnapFindMarkState
 import com.example.snapfindai.presentation.components.WavyProgressRing
+import com.example.snapfindai.ui.theme.ClaySheetShape
 import com.example.snapfindai.ui.theme.SnapFindAITheme
 import com.example.snapfindai.ui.theme.SnapFindDimens
 import com.example.snapfindai.ui.theme.SnapFindSpacing
@@ -51,8 +49,16 @@ fun OnboardingScreen(
     viewModel: OnboardingViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsState()
-    LaunchedEffect(uiState) {
-        if (uiState is OnboardingUiState.Complete) onComplete()
+    // A one-shot event, not a state this re-derives. `LaunchedEffect(uiState)
+    // { if (uiState is Complete) onComplete() }` navigates off a value that
+    // stays true after the navigation, so it re-fires for any observer that
+    // sees Complete again -- the same shape of bug UploadViewModel documents
+    // for its own navigateToResults, where it broke in practice. Here
+    // popUpTo(inclusive = true) happens to pop this destination and hide it,
+    // which makes it latent rather than visible; it is not a reason to keep
+    // the pattern on the one screen that still used it.
+    LaunchedEffect(Unit) {
+        viewModel.navigateOnward.collect { onComplete() }
     }
     OnboardingContent(
         uiState = uiState,
@@ -143,20 +149,21 @@ private fun Sheet(
     onCancel: () -> Unit,
     onPause: () -> Unit,
 ) {
-    val sheetShape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp)
+    val sheetShape = ClaySheetShape
     Column(
         modifier = modifier
             .fillMaxWidth()
             .heightIn(min = minHeight)
             .shadow(elevation = SnapFindDimens.elevation, shape = sheetShape, clip = false)
-            .border(1.5.dp, MaterialTheme.colorScheme.outline, sheetShape)
+            .border(SnapFindDimens.borderWidth, MaterialTheme.colorScheme.outline, sheetShape)
             .clip(sheetShape)
             .background(MaterialTheme.colorScheme.surface)
             .animateContentSize()
             .padding(horizontal = SnapFindSpacing.xl, vertical = SnapFindSpacing.xl),
         horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
     ) {
-        Box(modifier = Modifier.fillMaxHeight(), contentAlignment = Alignment.Center) {
+        Box(contentAlignment = Alignment.Center) {
             SheetState(uiState, visible = uiState is OnboardingUiState.ReadyToStart) {
                 ReadyToStartContent(onStart = onStart)
             }

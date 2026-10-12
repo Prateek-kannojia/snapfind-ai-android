@@ -16,3 +16,6 @@ val ClayShapes = Shapes(
 )
 
 val ClayPillShape = RoundedCornerShape(50)
+
+/** A bottom sheet's top corners only -- the same 28dp as [ClayShapes]'s `large`, not a new radius. */
+val ClaySheetShape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)

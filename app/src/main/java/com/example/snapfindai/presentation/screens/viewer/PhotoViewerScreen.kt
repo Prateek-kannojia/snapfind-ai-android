@@ -69,7 +69,7 @@ fun PhotoViewerScreen(
     val photos by viewModel.photos.collectAsState()
     val savingPhoto by viewModel.savingPhoto.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
-    val saveToGallery = rememberGallerySaveGate()
+    val saveToGallery = rememberGallerySaveGate(snackbarHostState)
 
     // Collected out here, not inside the loaded branch below: removing the
     // last photo empties the list, and the event saying so still has to be

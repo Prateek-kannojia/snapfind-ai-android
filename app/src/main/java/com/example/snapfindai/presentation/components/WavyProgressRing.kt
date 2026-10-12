@@ -1,6 +1,6 @@
 package com.example.snapfindai.presentation.components
 
-import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.CircularWavyProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
@@ -36,6 +36,13 @@ import com.example.snapfindai.ui.theme.SnapFindSpacing
  * [label] null draws the ring alone, for the sizes where a centred label
  * wouldn't fit anyway -- a small ring standing in for an icon in an action
  * slot, or a bare "still working" ring with its own text elsewhere.
+ *
+ * Sized as a fraction of the space it's given, clamped between
+ * [SnapFindDimens.ringSizeMin] and [SnapFindDimens.ringSizeMax], rather than
+ * one fixed dp for every device -- [sizeFraction] is the one knob a caller
+ * that wants a more prominent ring adjusts (see [SnapFindDimens.ringSizeFractionProminent]).
+ * [size] is an escape hatch for the one case that genuinely isn't
+ * screen-relative: a ring standing in for a fixed-size icon.
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
@@ -43,20 +50,19 @@ fun WavyProgressRing(
     progress: Float?,
     label: String? = null,
     modifier: Modifier = Modifier,
-    size: Dp = 104.dp,
+    sizeFraction: Float = SnapFindDimens.ringSizeFraction,
+    size: Dp? = null,
 ) {
-    // Weight carried through from the stroke to the label: a bold figure
-    // inside a hairline ring reads as two unrelated things sharing a space.
-    // One stroke for both the ring and its track, so the unfilled part is the
-    // same weight as the filled part rather than a thinner ghost of it.
     val stroke = with(LocalDensity.current) {
         Stroke(width = SnapFindDimens.progressStroke.toPx(), cap = StrokeCap.Round)
     }
-    Box(modifier = modifier.size(size), contentAlignment = Alignment.Center) {
+    BoxWithConstraints(modifier = modifier, contentAlignment = Alignment.Center) {
+        val resolvedSize = size
+            ?: (maxWidth * sizeFraction).coerceIn(SnapFindDimens.ringSizeMin, SnapFindDimens.ringSizeMax)
         if (progress != null) {
             CircularWavyProgressIndicator(
                 progress = { progress },
-                modifier = Modifier.size(size),
+                modifier = Modifier.size(resolvedSize),
                 color = MaterialTheme.colorScheme.primary,
                 trackColor = MaterialTheme.colorScheme.secondaryContainer,
                 stroke = stroke,
@@ -64,7 +70,7 @@ fun WavyProgressRing(
             )
         } else {
             CircularWavyProgressIndicator(
-                modifier = Modifier.size(size),
+                modifier = Modifier.size(resolvedSize),
                 color = MaterialTheme.colorScheme.primary,
                 trackColor = MaterialTheme.colorScheme.secondaryContainer,
                 stroke = stroke,

@@ -7,7 +7,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
@@ -83,18 +82,18 @@ class MainActivity : ComponentActivity() {
                             // history), otherwise the last completed one
                             // (the just-finished-a-job flow).
                             //
-                            // Refreshing uploadViewModel on the way out (so
-                            // its job-history grid picks up anything changed
-                            // in Results, e.g. removed photos) has to run no
-                            // matter HOW the user leaves this screen -- the
-                            // in-app back button, the system back gesture, or
-                            // the hardware back key all end up popping the
-                            // stack, but only disposal is guaranteed to fire
-                            // for all three. A callback wired to just the
-                            // back button's onClick would miss the other two.
-                            DisposableEffect(Unit) {
-                                onDispose { uploadViewModel.resetState() }
-                            }
+                            // Nothing here refreshes the upload screen on the
+                            // way out any more. That was a DisposableEffect
+                            // calling uploadViewModel.resetState() from
+                            // onDispose, chosen because disposal is the one
+                            // thing the in-app back button, the system back
+                            // gesture and the hardware key all have in
+                            // common. They do -- but so do a rotation and a
+                            // navigation *forward* into the photo viewer,
+                            // neither of which is leaving, and both of which
+                            // it therefore fired on. UploadScreen now asks on
+                            // resume instead, which is when it actually needs
+                            // the answer.
                             ResultsScreen(
                                 onNavigateBack = { navController.popBackStack() },
                                 // The photo's own path, not its position in the

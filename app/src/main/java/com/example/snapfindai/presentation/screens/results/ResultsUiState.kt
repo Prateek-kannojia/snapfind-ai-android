@@ -75,4 +75,15 @@ sealed interface ResultsEvent {
         val failedCount: Int,
         val lastSavedUri: Uri?,
     ) : ResultsEvent
+
+    /**
+     * Something the user asked for didn't happen, in one sentence written for
+     * them -- never an exception's own text. See `UserFacingException`.
+     *
+     * Separate from [ResultsUiState.Error], which replaces the whole screen:
+     * a removal that fails leaves a perfectly good list of matches on screen,
+     * and the only thing missing is an explanation of why they're all still
+     * there.
+     */
+    data class Message(val text: String) : ResultsEvent
 }

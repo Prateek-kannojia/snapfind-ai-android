@@ -67,6 +67,15 @@ fun SnapFindPhotoCard(
     aspectRatio: Float = 1f,
     shape: Shape = ClayShapes.medium,
     selected: Boolean? = null,
+    /**
+     * False while something is running that the tile's actions would
+     * interfere with -- a batch save or a removal working on these very
+     * files. Reaches [combinedClickable] rather than being checked inside the
+     * handlers, so the tile stops taking taps *and* reports itself as
+     * disabled; a handler that quietly drops the tap leaves a tile that still
+     * ripples under a finger and still announces as actionable.
+     */
+    enabled: Boolean = true,
     onClick: (() -> Unit)? = null,
     onLongClick: (() -> Unit)? = null,
     footer: @Composable (ColumnScope.() -> Unit)? = null,
@@ -111,7 +120,11 @@ fun SnapFindPhotoCard(
             // outside the shape it falls from.
             modifier = Modifier.let {
                 if (onClick != null || onLongClick != null) {
-                    it.combinedClickable(onClick = onClick ?: {}, onLongClick = onLongClick)
+                    it.combinedClickable(
+                        enabled = enabled,
+                        onClick = onClick ?: {},
+                        onLongClick = onLongClick,
+                    )
                 } else it
             },
         ) {

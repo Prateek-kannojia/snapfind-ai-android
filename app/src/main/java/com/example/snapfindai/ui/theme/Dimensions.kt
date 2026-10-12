@@ -26,8 +26,17 @@ object SnapFindDimens {
     val stepThumbnailSize = 44.dp
     val chipDotSize = 6.dp
     const val sheetMinHeightFraction = 0.4f
+    /** The one border weight in the app (outlined buttons, the onboarding sheet, an armed step row) -- shared so thickening it is a one-line change, not a three-file hunt. */
+    val borderWidth = 1.5.dp
     /** A waiting ring standing in for an icon in an action slot (saving the photo you're viewing) -- small enough to leave the slot's footprint unchanged, large enough for the scallops to still read. */
     val actionProgressSize = 24.dp
+    /** Where [WavyProgressRing] stops growing on a wide screen, and the floor below which the scallops and its label stop reading -- its actual size is a fraction of the space it's given, clamped between these. */
+    val ringSizeMin = 80.dp
+    val ringSizeMax = 160.dp
+    /** [WavyProgressRing]'s size as a fraction of its available width -- the default weight for a ring that's one element among several, like Results' loading spinner. */
+    const val ringSizeFraction = 0.3f
+    /** The larger fraction for a ring that's the whole point of its screen, like matching-in-progress -- bigger than [ringSizeFraction] by the same ratio the old fixed 128dp/104dp pair was. */
+    const val ringSizeFractionProminent = 0.36f
     /** A floating toolbar's actions sit alone over a photo with nothing around them to lend scale, so they are drawn larger than an app bar's -- at a bar's size they read as something small that drifted onto the image. */
     val toolbarAction = 56.dp
     /** The glyph inside [toolbarAction]: Material's 24dp icon looks lost in a 56dp target. */

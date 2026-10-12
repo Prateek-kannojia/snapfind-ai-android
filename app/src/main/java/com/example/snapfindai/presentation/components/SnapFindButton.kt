@@ -37,8 +37,7 @@ import com.example.snapfindai.ui.theme.SnapFindSpacing
  */
 enum class SnapFindButtonVariant { Primary, Tonal, Outlined }
 
-private val ButtonContentPadding = PaddingValues(horizontal = 24.dp, vertical = 12.dp)
-private val ButtonBorderWidth = 1.5.dp
+private val ButtonContentPadding = PaddingValues(horizontal = SnapFindSpacing.xl, vertical = SnapFindSpacing.md)
 
 /**
  * Sizing is content-driven, not screenshot-driven: `heightIn(min = ...)`
@@ -143,7 +142,7 @@ fun SnapFindButton(
             enabled = enabled,
             shape = ClayPillShape,
             border = BorderStroke(
-                ButtonBorderWidth,
+                SnapFindDimens.borderWidth,
                 if (enabled) MaterialTheme.colorScheme.onPrimaryContainer else disabledContainer,
             ),
             colors = ButtonDefaults.outlinedButtonColors(

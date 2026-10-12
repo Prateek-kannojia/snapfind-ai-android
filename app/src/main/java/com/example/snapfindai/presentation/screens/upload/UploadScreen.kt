@@ -15,7 +15,6 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
@@ -40,6 +39,9 @@ import androidx.compose.ui.tooling.preview.Devices
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import coil.compose.AsyncImage
 import com.example.snapfindai.domain.model.JobSummary
 import com.example.snapfindai.presentation.components.SnapFindButton
@@ -92,7 +94,21 @@ fun UploadScreen(
     val selectedJobs by viewModel.selectedJobs.collectAsState()
     val operationInFlight by viewModel.operationInFlight.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
-    val saveToGallery = rememberGallerySaveGate()
+    val saveToGallery = rememberGallerySaveGate(snackbarHostState)
+
+    // Picks up whatever changed while this screen was away -- photos saved or
+    // removed inside a job, or a job deleted entirely. Driven from here, on
+    // resume, rather than from the Results destination's disposal, which also
+    // fired on rotation and on the way *into* the photo viewer. Same pattern
+    // ResultsScreen uses to re-check its own job.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) viewModel.onScreenResumed()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     LaunchedEffect(Unit) {
         viewModel.events.collect { event ->
@@ -112,6 +128,14 @@ fun UploadScreen(
                         )
                     }
                 }
+
+                is UploadEvent.JobsDeleteFailed -> snackbarHostState.showSnackbar(
+                    if (event.count == 1) {
+                        "Couldn't delete that job"
+                    } else {
+                        "Couldn't delete ${event.count} jobs"
+                    }
+                )
             }
         }
     }
@@ -191,13 +215,19 @@ private fun UploadContent(
             return@Scaffold
         }
 
-        Box(modifier = Modifier.fillMaxSize().padding(paddingValues)) {
-            if (jobHistory.isEmpty()) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = SnapFindSpacing.screenHorizontal),
-                ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+                .padding(horizontal = SnapFindSpacing.screenHorizontal),
+        ) {
+            AnimatedVisibility(
+                visible = !selectionMode,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically(),
+            ) {
+                Column {
+                    Spacer(modifier = Modifier.height(SnapFindSpacing.lg))
                     UploadForm(
                         hasSelfie = hasSelfie,
                         selfieUri = selfieUri,
@@ -225,72 +255,44 @@ private fun UploadContent(
                             SnapFindButtonSlot { PrivacyChip() }
                         }
                     }
-
-                    EmptyUploadState(
-                        modifier = Modifier.weight(1f).fillMaxWidth(),
-                        showChip = !armed,
-                    )
-                }
-            } else {
-                val dockedCtaReserve = SnapFindDimens.minTouchTarget + SnapFindSpacing.xxl
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(2),
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(
-                        start = SnapFindSpacing.screenHorizontal,
-                        end = SnapFindSpacing.screenHorizontal,
-                        top = SnapFindSpacing.lg,
-                        bottom = if (armed) dockedCtaReserve else SnapFindSpacing.lg,
-                    ),
-                    horizontalArrangement = Arrangement.spacedBy(SnapFindSpacing.grid),
-                    verticalArrangement = Arrangement.spacedBy(SnapFindSpacing.grid),
-                ) {
-                    if (!selectionMode) {
-                        item(span = { GridItemSpan(maxLineSpan) }) {
-                            Column {
-                                UploadForm(
-                                    hasSelfie = hasSelfie,
-                                    selfieUri = selfieUri,
-                                    hasZip = hasZip,
-                                    zipFileName = zipFileName,
-                                    zipFileSizeBytes = zipFileSizeBytes,
-                                    onChooseSelfie = onChooseSelfie,
-                                    onChooseZip = onChooseZip,
-                                )
-                                if (uiState is UploadUiState.Error) {
-                                    Spacer(modifier = Modifier.height(SnapFindSpacing.lg))
-                                    Text(uiState.message, color = MaterialTheme.colorScheme.error)
-                                }
-                                Spacer(modifier = Modifier.height(SnapFindSpacing.section))
-                            }
-                        }
-                    }
-
-                    stickyHeader {
-                        RecentJobsHeader(totalBytes = jobHistory.sumOf { it.sizeBytes })
-                    }
-
-                    items(jobHistory, key = { it.id }) { job ->
-                        JobHistoryCard(
-                            job = job,
-                            selectionMode = selectionMode,
-                            isSelected = job.id in selectedJobs,
-                            onClick = {
-                                if (selectionMode) onToggleJobSelected(job.id) else onOpenJob(job.id)
-                            },
-                            onLongClick = { onToggleJobSelected(job.id) },
-                        )
-                    }
                 }
             }
 
-            AnimatedVisibility(
-                visible = jobHistory.isNotEmpty() && armed,
-                modifier = Modifier.align(Alignment.BottomCenter),
-                enter = fadeIn() + expandVertically(),
-                exit = fadeOut() + shrinkVertically(),
-            ) {
-                DockedCta(onSubmit = onSubmit)
+            if (jobHistory.isNotEmpty()) {
+                RecentJobsHeader(totalBytes = jobHistory.sumOf { it.sizeBytes })
+            }
+
+            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                if (jobHistory.isEmpty()) {
+                    EmptyUploadState(modifier = Modifier.fillMaxSize(), showChip = !armed)
+                } else {
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(2),
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(top = SnapFindSpacing.sm, bottom = SnapFindSpacing.lg),
+                        horizontalArrangement = Arrangement.spacedBy(SnapFindSpacing.grid),
+                        verticalArrangement = Arrangement.spacedBy(SnapFindSpacing.grid),
+                    ) {
+                        items(jobHistory, key = { it.id }) { job ->
+                            JobHistoryCard(
+                                job = job,
+                                selectionMode = selectionMode,
+                                isSelected = job.id in selectedJobs,
+                                // The same reason the results grid does this:
+                                // the app bar's actions are already disabled
+                                // while a batch runs, and leaving the tiles
+                                // live let a tap open a job that was being
+                                // deleted, or change a selection that the
+                                // batch's own cleanup then discarded.
+                                enabled = !operationInFlight,
+                                onClick = {
+                                    if (selectionMode) onToggleJobSelected(job.id) else onOpenJob(job.id)
+                                },
+                                onLongClick = { onToggleJobSelected(job.id) },
+                            )
+                        }
+                    }
+                }
             }
         }
     }
@@ -486,7 +488,7 @@ private fun StepRow(
             MaterialTheme.colorScheme.surfaceContainerLow
         },
         border = if (showBorder) {
-            BorderStroke(1.5.dp, MaterialTheme.colorScheme.onPrimaryContainer)
+            BorderStroke(SnapFindDimens.borderWidth, MaterialTheme.colorScheme.onPrimaryContainer)
         } else null,
     ) {
         Row(
@@ -624,26 +626,6 @@ private fun RecentJobsHeader(totalBytes: Long) {
 }
 
 @Composable
-private fun DockedCta(onSubmit: () -> Unit) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.background,
-    ) {
-        Column {
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            Box(
-                modifier = Modifier.padding(
-                    horizontal = SnapFindSpacing.screenHorizontal,
-                    vertical = SnapFindSpacing.sm,
-                ),
-            ) {
-                SnapFindButton(text = "Find My Photos", onClick = onSubmit)
-            }
-        }
-    }
-}
-
-@Composable
 private fun MatchingProgress(
     modifier: Modifier = Modifier,
     state: UploadUiState.Processing,
@@ -664,7 +646,7 @@ private fun MatchingProgress(
         WavyProgressRing(
             progress = fraction,
             label = fraction?.let { "${(it * 100).toInt()}%" },
-            size = 128.dp,
+            sizeFraction = SnapFindDimens.ringSizeFractionProminent,
         )
         Text(
             "Matching your face",
@@ -705,6 +687,8 @@ private fun JobHistoryCard(
     job: JobSummary,
     selectionMode: Boolean,
     isSelected: Boolean,
+    /** False while a batch download or a delete is running -- see [SnapFindPhotoCard]. */
+    enabled: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
 ) {
@@ -712,6 +696,7 @@ private fun JobHistoryCard(
         modifier = modifier,
         aspectRatio = 1f,
         selected = if (selectionMode) isSelected else null,
+        enabled = enabled,
         onClick = onClick,
         onLongClick = onLongClick,
         footer = {

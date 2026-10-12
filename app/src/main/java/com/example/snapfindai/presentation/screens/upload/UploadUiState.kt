@@ -29,4 +29,15 @@ sealed interface UploadEvent {
         val failedCount: Int,
         val lastSavedUri: android.net.Uri?,
     ) : UploadEvent
+
+    /**
+     * [count] of the selected jobs couldn't be deleted.
+     *
+     * A delete that fails part-way used to say nothing at all: the selection
+     * cleared, the grid refreshed, and the jobs that survived were simply
+     * still there, which reads as the app having ignored the tap. The jobs
+     * left on screen are the accurate outcome -- this is the sentence that
+     * explains why they are.
+     */
+    data class JobsDeleteFailed(val count: Int) : UploadEvent
 }

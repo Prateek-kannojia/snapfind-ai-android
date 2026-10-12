@@ -48,9 +48,9 @@ class ResultsViewModel @Inject constructor(
     val uiState: StateFlow<ResultsUiState> = _uiState.asStateFlow()
 
     // Buffered and dropping rather than suspending: `emit` on a bare
-     // SharedFlow waits for a collector, which parks the coroutine that
-     // produced it whenever this screen isn't composed -- and a batch
-     // message delivered on some later visit is stale by then anyway.
+    // SharedFlow waits for a collector, which parks the coroutine that
+    // produced it whenever this screen isn't composed -- and a batch
+    // message delivered on some later visit is stale by then anyway.
     private val _events = MutableSharedFlow<ResultsEvent>(
         extraBufferCapacity = 1,
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
@@ -109,6 +109,17 @@ class ResultsViewModel @Inject constructor(
             }.getOrNull() ?: return@launch
             val matches = runCatching { reconcileSavedPhotos(job.matches) }.getOrNull() ?: return@launch
 
+            // Re-checked here, after the reads, because the check at the top
+            // of this function only covers the instant it was called and both
+            // reads above suspend. A save or a removal starting inside that
+            // window used to have its work thrown away by a list that had
+            // been read before it began -- ticks reverting, removed photos
+            // reappearing. Nothing suspends between this check and the
+            // update below, and both run on the main dispatcher, so the two
+            // can't interleave.
+            val inFlight = (_uiState.value as? ResultsUiState.Loaded)?.operationInFlight ?: return@launch
+            if (inFlight) return@launch
+
             updateLoaded { current ->
                 // A failure message is the user's only record of what went
                 // wrong, so it survives a refresh; everything else comes
@@ -153,6 +164,20 @@ class ResultsViewModel @Inject constructor(
                         selectedPhotos = emptySet(),
                     )
                 }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Caught, where it previously wasn't: this reaches Room and
+                // the filesystem, and a `finally` alone let the throw run the
+                // cleanup and then take the app down with it. The photos stay
+                // in the list and stay selected, because that is what is
+                // still true -- nothing was removed.
+                Log.w(TAG, "Couldn't remove ${toRemove.size} match(es)", e)
+                _events.emit(
+                    ResultsEvent.Message(
+                        if (toRemove.size == 1) "Couldn't remove that photo" else "Couldn't remove those photos"
+                    )
+                )
             } finally {
                 // finally, so a failure can't leave the screen permanently
                 // unable to save or remove anything.

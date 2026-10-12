@@ -3,6 +3,7 @@ package com.example.snapfindai.presentation.screens.upload
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.work.ExistingWorkPolicy
@@ -21,6 +22,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import java.io.File
 import java.util.UUID
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
@@ -81,12 +83,16 @@ class UploadViewModel @Inject constructor(
     private val _zipFileSizeBytes = MutableStateFlow<Long?>(null)
     val zipFileSizeBytes: StateFlow<Long?> = _zipFileSizeBytes.asStateFlow()
 
-    fun onSelfiePicked(uri: Uri?) { _selfieUri.value = uri }
+    fun onSelfiePicked(uri: Uri?) {
+        _selfieUri.value = uri
+        clearStaleError()
+    }
 
     fun onZipPicked(context: Context, uri: Uri?) {
         _zipUri.value = uri
         _zipFileName.value = null
         _zipFileSizeBytes.value = null
+        clearStaleError()
         if (uri == null) return
         viewModelScope.launch {
             val (name, size) = withContext(Dispatchers.IO) { queryZipInfo(context, uri) }
@@ -110,30 +116,32 @@ class UploadViewModel @Inject constructor(
         } ?: (null to null)
     }
 
-    // One-shot: navigating off of `uiState == Success` breaks the moment
-    // Results is left via the system back gesture instead of its in-app back
-    // button -- that path pops straight through Compose Navigation's own back
-    // handler, never touching resetState(), so uiState is still Success when
-    // Upload reappears and immediately re-navigates forward. A one-shot event
-    // fires exactly once and is never re-derived from state afterward.
-    // A Channel, because this one has to arrive. On a bare SharedFlow
-     // `emit` suspends until something is collecting, so a job finishing
-     // while the user was on another screen parked that coroutine for as
-     // long as they stayed away. A buffered channel takes the event
-     // immediately and hands it over when the screen is next shown -- the
-     // user started this job, and being taken to its results on their return
-     // is the point of the event.
+    // One-shot, rather than something the screen re-derives from
+    // `uiState == Success`. Reading it off state broke whenever Results was
+    // left by the system back gesture instead of its in-app back button: that
+    // path pops straight through Compose Navigation's own back handler, so
+    // nothing reset uiState, it was still Success when Upload reappeared, and
+    // the screen immediately navigated forward again. An event fires exactly
+    // once and is never re-derived afterwards.
+    //
+    // A Channel specifically, because this one has to arrive. On a bare
+    // SharedFlow `emit` suspends until something is collecting, so a job
+    // finishing while the user was on another screen parked that coroutine
+    // for as long as they stayed away. A buffered channel takes the event
+    // immediately and hands it over when the screen is next shown -- the
+    // user started this job, and being taken to its results on their return
+    // is the point of the event.
     private val _navigateToResults = Channel<Unit>(Channel.BUFFERED)
     val navigateToResults: Flow<Unit> = _navigateToResults.receiveAsFlow()
 
     // One-shot, like navigateToResults: a snackbar and a notification must
     // fire once per batch, not again every time the screen recomposes.
     // The opposite choice, for the opposite kind of event. These say what a
-     // batch did, and a message is only true at the moment it is produced --
-     // replaying "17 saved" at whoever happens to compose next, minutes
-     // later, is worse than saying nothing. DROP_OLDEST with a buffer of one
-     // means emit never suspends and nothing is kept for a listener who
-     // wasn't there.
+    // batch did, and a message is only true at the moment it is produced --
+    // replaying "17 saved" at whoever happens to compose next, minutes
+    // later, is worse than saying nothing. DROP_OLDEST with a buffer of one
+    // means emit never suspends and nothing is kept for a listener who
+    // wasn't there.
     private val _events = MutableSharedFlow<UploadEvent>(
         extraBufferCapacity = 1,
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
@@ -280,6 +288,24 @@ class UploadViewModel @Inject constructor(
         workManager.cancelUniqueWork(MatchPhotosWorker.WORK_NAME)
     }
 
+    /**
+     * Drops an error message once the user acts on it by picking a different
+     * file.
+     *
+     * An error describes the attempt that produced it, and choosing a new
+     * selfie or archive is the user answering it -- so it stops being true at
+     * that moment. It used to survive: "No matches found. Try a clearer
+     * selfie." stayed on screen while they picked the new selfie and sat
+     * directly above an enabled Find My Photos, clearing only when the next
+     * job actually started.
+     *
+     * Error only. Processing and Success belong to a job rather than to this
+     * form, and picking a file can't invalidate either.
+     */
+    private fun clearStaleError() {
+        if (_uiState.value is UploadUiState.Error) _uiState.value = UploadUiState.Idle
+    }
+
     /** Just the selfie -- see the FAILED branch for why the archive is left alone. */
     private fun clearPickedSelfie() {
         _selfieUri.value = null
@@ -292,9 +318,35 @@ class UploadViewModel @Inject constructor(
         _zipFileSizeBytes.value = null
     }
 
-    fun resetState() {
-        _uiState.value = UploadUiState.Idle
-        refreshHistory() // picks up newly-saved/removed jobs when returning from Results
+    /**
+     * Called when the Upload screen comes back to the foreground, to pick up
+     * anything that changed while it was away -- photos saved or removed
+     * inside a job, or a whole job deleted.
+     *
+     * This used to be driven from the *other* side: a `DisposableEffect` on
+     * the Results destination ran it from `onDispose`, on the reasoning that
+     * disposal is the one thing every way of leaving that screen has in
+     * common. It is, but it is also common to things that aren't leaving at
+     * all -- a rotation disposes the composable, and so does navigating
+     * deeper into the photo viewer. So it fired on rotation, and it fired on
+     * the way *in* to the viewer, each time resetting this screen's state and
+     * re-reading the database for no reason.
+     *
+     * Asking on resume instead means it runs exactly when the answer is about
+     * to be looked at, whatever happened in between. It's the same pattern
+     * ResultsScreen already uses for the same problem.
+     */
+    fun onScreenResumed() {
+        // Processing is left alone, and the guard matters precisely because
+        // this moved to resume. WorkManager's flow is the source of truth for
+        // a running job, and it doesn't re-emit just because something else
+        // overwrote the state it produced -- so blanking a Processing state
+        // here would replace a running job's progress screen with the form,
+        // every time the user came back to the app, until whenever the next
+        // progress update happened to land. The old placement never saw a
+        // running job, because it only fired as Results was disposed.
+        if (_uiState.value !is UploadUiState.Processing) _uiState.value = UploadUiState.Idle
+        refreshHistory()
     }
 
     // --- Selecting jobs ---
@@ -332,15 +384,34 @@ class UploadViewModel @Inject constructor(
         if (jobIds.isEmpty() || _operationInFlight.value) return
         _operationInFlight.value = true
         viewModelScope.launch {
+            var failedCount = 0
             try {
-                jobIds.forEach { deleteJob.invoke(it) }
+                jobIds.forEach { jobId ->
+                    // Caught per job, not around the loop: one undeletable row
+                    // shouldn't strand every other job the user selected. The
+                    // same rule the batch save follows.
+                    try {
+                        deleteJob.invoke(jobId)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        failedCount++
+                        Log.w(TAG, "Couldn't delete job $jobId", e)
+                    }
+                }
             } finally {
                 // finally, so a failure part-way can't leave the screen
                 // permanently unable to delete or download anything.
                 _operationInFlight.value = false
                 clearSelection()
             }
+            // Below the try rather than inside it, and now actually reached:
+            // nothing here caught, so a throw from deleteJob ran the finally
+            // and then propagated -- which both crashed the app and, before
+            // it did, skipped this refresh and left the deleted jobs on
+            // screen as though nothing had happened.
             refreshHistory()
+            if (failedCount > 0) _events.emit(UploadEvent.JobsDeleteFailed(failedCount))
         }
     }
 
@@ -391,6 +462,26 @@ class UploadViewModel @Inject constructor(
     val batchProgress: StateFlow<Pair<Int, Int>?> = _batchProgress.asStateFlow()
 
     private fun refreshHistory() {
-        viewModelScope.launch { _jobHistory.value = getJobHistory() }
+        viewModelScope.launch {
+            // Keeps whatever list it already has when the read fails, rather
+            // than blanking the grid -- "the database couldn't be read" and
+            // "you have no jobs" look identical on screen, and only one of
+            // them is true. Unhandled this was an uncaught coroutine
+            // exception: a Room failure here took the whole app down, on a
+            // path that runs on startup and after every job.
+            val history = try {
+                getJobHistory()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Couldn't read the job history", e)
+                return@launch
+            }
+            _jobHistory.value = history
+        }
+    }
+
+    private companion object {
+        const val TAG = "UploadViewModel"
     }
 }

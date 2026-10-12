@@ -8,9 +8,12 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -22,6 +25,32 @@ class OnboardingViewModel @Inject constructor(
     private val _uiState = MutableStateFlow<OnboardingUiState>(OnboardingUiState.ReadyToStart)
     val uiState: StateFlow<OnboardingUiState> = _uiState.asStateFlow()
 
+    /**
+     * Fires once when the models are ready and the app should move on to the
+     * upload screen.
+     *
+     * [OnboardingUiState.Complete] still exists, because the sheet has a
+     * finished state to draw -- but navigation no longer comes from reading
+     * it. A state that says "we are done" stays true after it has been acted
+     * on, so anything observing it later acts on it again; an event is
+     * consumed. A buffered channel so this can't be missed by a collector
+     * that isn't attached yet, which for the one navigation that gets the
+     * user out of onboarding is the only acceptable failure mode.
+     */
+    private val _navigateOnward = Channel<Unit>(Channel.BUFFERED)
+    val navigateOnward: Flow<Unit> = _navigateOnward.receiveAsFlow()
+
+    /**
+     * The coroutine currently allowed to touch the partial download --
+     * whether that's a transfer or the cleanup after a cancel.
+     *
+     * One slot, and every operation below joins whatever is in it before
+     * starting its own work. The bytes already on disk *are* the download's
+     * state, so two of these running at once is two writers on one temp file,
+     * or a delete landing on a file a fresh download has just started
+     * writing. Pause and cancel both stop their coroutine without waiting for
+     * it, which is what made that reachable by tapping.
+     */
     private var downloadJob: Job? = null
 
     /**
@@ -39,8 +68,27 @@ class OnboardingViewModel @Inject constructor(
         // nothing has been reported, which are different from "0% done" and
         // should look different too.
         val resumeFrom = (_uiState.value as? OnboardingUiState.Paused)?.progress
+        // Claimed synchronously, before the coroutine starts, because the
+        // body now begins by waiting on the previous attempt. Set inside the
+        // launch -- as it used to be -- a second tap arriving during that
+        // wait would still see Paused or ReadyToStart, pass the guard above,
+        // and queue a second download behind the first.
+        _uiState.value = OnboardingUiState.Downloading(resumeFrom)
+        val previous = downloadJob
         downloadJob = viewModelScope.launch {
-            _uiState.value = OnboardingUiState.Downloading(resumeFrom)
+            // The fix for two separate races, both reachable by tapping:
+            //
+            // Resume. pauseDownload cancels without joining, so the paused
+            // transfer can still be mid-write when this starts. Two writers,
+            // one temp file.
+            //
+            // Cancel then Get Started. cancelDownload deletes the partial
+            // file from its own coroutine. Without waiting for that to
+            // finish, the delete lands *after* this download has started and
+            // takes its fresh partial file with it -- the old comment there
+            // reasoned about the stopped writer recreating the file, which is
+            // a different hazard from a new writer losing its own.
+            previous?.join()
             try {
                 downloadModels { progress ->
                     // Only while still downloading: a cancel drops straight
@@ -52,6 +100,7 @@ class OnboardingViewModel @Inject constructor(
                     }
                 }
                 _uiState.value = OnboardingUiState.Complete
+                _navigateOnward.send(Unit)
             } catch (e: CancellationException) {
                 // Rethrown rather than caught below: CancellationException
                 // extends Exception, so the generic handler would report a
@@ -82,9 +131,13 @@ class OnboardingViewModel @Inject constructor(
      */
     fun cancelDownload() {
         val stopping = downloadJob
-        downloadJob = null
         _uiState.value = OnboardingUiState.ReadyToStart
-        viewModelScope.launch {
+        // The cleanup goes back into the slot rather than clearing it, so a
+        // Get Started tapped immediately afterwards waits for the delete
+        // instead of racing it. Clearing the slot was the bug: the next
+        // download had nothing to wait on and could be underway by the time
+        // discardPartialDownloads ran, which then deleted *its* partial file.
+        downloadJob = viewModelScope.launch {
             // Joined before deleting, not just cancelled: cancel() only asks,
             // and deleting the file out from under a write that hasn't
             // stopped yet would let the writer recreate it.
@@ -110,8 +163,12 @@ class OnboardingViewModel @Inject constructor(
         // quietly refuse to pause exactly when a user on a bad connection
         // most wants to.
         val downloading = _uiState.value as? OnboardingUiState.Downloading ?: return
+        // Cancelled but deliberately left in the slot, where clearing it was
+        // the bug: cancel() only asks the transfer to stop, so Resume has to
+        // be able to wait for it to actually finish unwinding before it opens
+        // the same temp file. There is nothing to join if the reference is
+        // thrown away here.
         downloadJob?.cancel()
-        downloadJob = null
         _uiState.value = OnboardingUiState.Paused(downloading.progress)
     }
 
