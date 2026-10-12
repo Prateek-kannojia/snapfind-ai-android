@@ -6,7 +6,10 @@ import android.app.NotificationManager
 import android.os.Build
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
+import coil.ImageLoader
+import coil.ImageLoaderFactory
 import com.example.snapfindai.dev.DevDataSeeder
+import com.example.snapfindai.presentation.util.ThumbnailFetcher
 import com.example.snapfindai.utils.DownloadNotificationHelper
 import com.example.snapfindai.utils.MatchingNotifications
 import com.example.snapfindai.work.AbandonedJobSweeper
@@ -18,7 +21,17 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @HiltAndroidApp
-class SnapFindApplication : Application(), Configuration.Provider {
+class SnapFindApplication : Application(), Configuration.Provider, ImageLoaderFactory {
+
+    /**
+     * Coil's default loader knows nothing about [Thumbnail], so the grids'
+     * small-copy model is registered here -- the one place every AsyncImage
+     * in the app resolves through.
+     */
+    override fun newImageLoader(): ImageLoader = ImageLoader.Builder(this)
+        .components { add(ThumbnailFetcher.Factory(this@SnapFindApplication)) }
+        .build()
+
 
     /**
      * WorkManager builds workers reflectively, so by default it can only

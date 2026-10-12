@@ -9,15 +9,18 @@ import com.example.snapfindai.domain.usecase.ReconcileSavedPhotosUseCase
 import com.example.snapfindai.domain.usecase.RemoveMatchedPhotosUseCase
 import com.example.snapfindai.domain.usecase.SaveMatchedPhotoUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
+import java.io.File
+import javax.inject.Inject
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
-import java.io.File
-import javax.inject.Inject
 
 /** One-shot feedback for an action taken on the photo currently on screen. */
 sealed interface PhotoViewerEvent {
@@ -51,8 +54,12 @@ class PhotoViewerViewModel @Inject constructor(
     private val _savingPhoto = MutableStateFlow<File?>(null)
     val savingPhoto: StateFlow<File?> = _savingPhoto.asStateFlow()
 
-    private val _events = MutableSharedFlow<PhotoViewerEvent>()
-    val events: SharedFlow<PhotoViewerEvent> = _events.asSharedFlow()
+    // A Channel rather than a dropping SharedFlow, because this stream
+     // carries [PhotoViewerEvent.Closed] alongside its messages. Losing a
+     // message costs a snackbar; losing the close leaves the user looking at
+     // a viewer with nothing in it and no way out but back.
+    private val _events = Channel<PhotoViewerEvent>(Channel.BUFFERED)
+    val events: Flow<PhotoViewerEvent> = _events.receiveAsFlow()
 
     init {
         viewModelScope.launch { load() }
@@ -75,14 +82,14 @@ class PhotoViewerViewModel @Inject constructor(
                     _photos.value = _photos.value.map {
                         if (it.photo == match.photo) it.copy(savedAt = outcome.savedAt) else it
                     }
-                    _events.emit(
+                    _events.send(
                         PhotoViewerEvent.Message(
                             if (outcome.alreadyExisted) "Already in your gallery" else "Photo saved",
                         )
                     )
                 },
                 onFailure = { error ->
-                    _events.emit(PhotoViewerEvent.Message(error.message ?: "Couldn't save this photo."))
+                    _events.send(PhotoViewerEvent.Message(error.message ?: "Couldn't save this photo."))
                 },
             )
             _savingPhoto.value = null
@@ -94,8 +101,8 @@ class PhotoViewerViewModel @Inject constructor(
         viewModelScope.launch {
             removeMatchedPhotos(listOf(match))
             _photos.value = _photos.value.filterNot { it.photo == match.photo }
-            if (_photos.value.isEmpty()) _events.emit(PhotoViewerEvent.Closed)
-            else _events.emit(PhotoViewerEvent.Message("Removed from matches"))
+            if (_photos.value.isEmpty()) _events.send(PhotoViewerEvent.Closed)
+            else _events.send(PhotoViewerEvent.Message("Removed from matches"))
         }
     }
 

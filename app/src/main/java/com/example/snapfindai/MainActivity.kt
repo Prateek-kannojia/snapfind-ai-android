@@ -1,29 +1,31 @@
 package com.example.snapfindai
 
+
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
-import com.example.snapfindai.presentation.AppStartupViewModel
-import com.example.snapfindai.ui.theme.SnapFindAITheme
-
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.hilt.navigation.compose.hiltViewModel
+import com.example.snapfindai.presentation.AppStartupViewModel
 import com.example.snapfindai.presentation.screens.onboarding.OnboardingScreen
+import com.example.snapfindai.presentation.screens.results.ResultsScreen
 import com.example.snapfindai.presentation.screens.upload.UploadScreen
 import com.example.snapfindai.presentation.screens.upload.UploadViewModel
-import com.example.snapfindai.presentation.screens.results.ResultsScreen
 import com.example.snapfindai.presentation.screens.viewer.PhotoViewerScreen
+import com.example.snapfindai.ui.theme.SnapFindAITheme
 import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint
@@ -75,7 +77,7 @@ class MainActivity : ComponentActivity() {
                         composable(
                             "results?jobId={jobId}",
                             arguments = listOf(navArgument("jobId") { type = NavType.LongType; defaultValue = -1L }),
-                        ) {
+                        ) { entry ->
                             // ResultsScreen owns its own ViewModel -- loads
                             // the jobId nav arg's job if present (opened from
                             // history), otherwise the last completed one
@@ -100,7 +102,7 @@ class MainActivity : ComponentActivity() {
                                 // position would only land on the right photo
                                 // as long as both lists happened to be built
                                 // identically. Identity survives that.
-                                onPhotoClick = { jobId, photoPath ->
+                                onPhotoClick = entry.once { jobId: Long, photoPath: String ->
                                     navController.navigate("photo_viewer/$jobId?photo=${Uri.encode(photoPath)}")
                                 },
                             )
@@ -125,4 +127,28 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+}
+
+/**
+ * Wraps a navigation action so it only runs while this destination is the
+ * resumed one.
+ *
+ * A composed screen is hit-testable the instant it appears, but its back
+ * stack entry is only marked `RESUMED` once the enter transition finishes.
+ * Anything tapped in that window is a tap the user aimed at the screen they
+ * were *leaving*. That produced a real and very confusing bug: tapping a job
+ * card, coming back, and tapping it again quickly opened a photo instead of
+ * the job -- the second tap landed on the results grid that had just appeared
+ * underneath, where a matched photo occupies almost exactly the position the
+ * job card did.
+ *
+ * Applied to this one callback and nothing else. Wrapping every navigation
+ * made the app feel broken: a destination is only RESUMED once its *own*
+ * transition has finished, so an ordinary tap on a job card landed in that
+ * window and was swallowed, and the card needed two or three presses to
+ * open. Only the results grid was ever receiving taps meant for the screen
+ * behind it, so only the results grid guards against them.
+ */
+private fun <A, B> NavBackStackEntry.once(action: (A, B) -> Unit): (A, B) -> Unit = { a, b ->
+    if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) action(a, b)
 }

@@ -5,6 +5,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.pager.HorizontalPager
@@ -27,6 +28,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -44,9 +46,9 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import coil.compose.AsyncImage
 import com.example.snapfindai.domain.model.FaceMatchResult
 import com.example.snapfindai.presentation.components.SnapFindSnackbarHost
-import com.example.snapfindai.presentation.components.WavyProgressRing
 import com.example.snapfindai.presentation.util.rememberGallerySaveGate
 import com.example.snapfindai.ui.theme.SnapFindDimens
+import com.example.snapfindai.ui.theme.SnapFindSpacing
 import java.io.File
 
 /**
@@ -131,7 +133,7 @@ private fun LoadedPhotoViewer(
 ) {
     val pagerState = rememberPagerState(initialPage = startIndex.coerceIn(0, photos.size - 1)) { photos.size }
     val current = photos.getOrNull(pagerState.currentPage)
-    var confirmingRemove by remember { mutableStateOf(false) }
+    var confirmingRemove by rememberSaveable { mutableStateOf(false) }
 
     Scaffold(
         snackbarHost = { SnapFindSnackbarHost(snackbarHostState) },
@@ -154,84 +156,6 @@ private fun LoadedPhotoViewer(
             )
         },
         containerColor = Color.Black,
-        floatingActionButtonPosition = FabPosition.Center,
-        floatingActionButton = {
-            if (current != null) {
-                // The app's own surface rather than the viewer's black: the
-                // toolbar is a piece of the app laid over a photo, not part
-                // of the photo, and painting it `background` is what says so.
-                // Everything else on this screen is deliberately black to get
-                // out of the image's way; this is the one thing that should
-                // not disappear into it.
-                HorizontalFloatingToolbar(
-                    expanded = true,
-                    colors = FloatingToolbarDefaults.standardFloatingToolbarColors(
-                        toolbarContainerColor = MaterialTheme.colorScheme.background,
-                        toolbarContentColor = MaterialTheme.colorScheme.onBackground,
-                    ),
-                ) {
-                    when {
-                        // The app's one waiting motif, shrunk to an icon's
-                        // size. The Box holds an IconButton's own footprint so
-                        // the toolbar doesn't resize when the action becomes a
-                        // ring mid-save.
-                        savingPhoto == current.photo -> Box(
-                            modifier = Modifier.size(SnapFindDimens.toolbarAction),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            WavyProgressRing(
-                                progress = null,
-                                size = SnapFindDimens.toolbarIcon,
-                            )
-                        }
-                        // Stays tappable once saved: the user may have deleted
-                        // the gallery copy since, and re-saving is a no-op
-                        // when they haven't.
-                        current.savedAt != null -> IconButton(
-                            onClick = { onSave(current) },
-                            modifier = Modifier.size(SnapFindDimens.toolbarAction),
-                        ) {
-                            Icon(
-                                Icons.Default.CheckCircle,
-                                contentDescription = "Saved to gallery, tap to save again",
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(SnapFindDimens.toolbarIcon),
-                            )
-                        }
-                        else -> IconButton(
-                            onClick = { onSave(current) },
-                            modifier = Modifier.size(SnapFindDimens.toolbarAction),
-                        ) {
-                            Icon(
-                                Icons.Default.FileDownload,
-                                contentDescription = "Save to gallery",
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(SnapFindDimens.toolbarIcon),
-                            )
-                        }
-                    }
-                    IconButton(
-                        onClick = { confirmingRemove = true },
-                        modifier = Modifier.size(SnapFindDimens.toolbarAction),
-                    ) {
-                        // The same bin as the selection bars use. It was a
-                        // remove-circle to mark that this takes the photo out
-                        // of the results without touching the user's own copy
-                        // -- but a distinction drawn only in the icon, on the
-                        // one screen that draws it differently, teaches
-                        // nothing and just reads as an inconsistency. The
-                        // confirmation says it in words, where it can
-                        // actually be read.
-                        Icon(
-                            Icons.Default.Delete,
-                            contentDescription = "Remove from matches",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(SnapFindDimens.toolbarIcon),
-                        )
-                    }
-                }
-            }
-        },
     ) { padding ->
         // Zoom lives here rather than inside each page so the pager can see
         // it: while a photo is magnified a horizontal drag has to pan that
@@ -248,6 +172,7 @@ private fun LoadedPhotoViewer(
             offset = Offset.Zero
         }
 
+        Box(modifier = Modifier.fillMaxSize()) {
         HorizontalPager(
             state = pagerState,
             modifier = Modifier.fillMaxSize().padding(padding),
@@ -305,6 +230,20 @@ private fun LoadedPhotoViewer(
                     },
             )
         }
+
+            if (current != null) {
+                ViewerActions(
+                    current = current,
+                    savingPhoto = savingPhoto,
+                    onSave = onSave,
+                    onRemove = { confirmingRemove = true },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .navigationBarsPadding()
+                        .padding(bottom = SnapFindSpacing.xl),
+                )
+            }
+        }
     }
 
     if (confirmingRemove && current != null) {
@@ -341,3 +280,82 @@ private fun Offset.coerceInside(viewport: IntSize, scale: Float): Offset {
 /** Far enough in to read a face, short of the point where a phone photo turns to mush. */
 private const val MAX_SCALE = 5f
 private const val DOUBLE_TAP_SCALE = 2.5f
+
+/**
+ * The viewer's two actions, laid over the photo rather than handed to
+ * Scaffold's floating-action-button slot.
+ *
+ * That slot is for a FAB, and Scaffold treats whatever is in it like one:
+ * it owns the placement, re-measures it against the bar and snackbar, and
+ * animates it when its content changes size. A toolbar whose first action
+ * swaps between a button and a progress ring changes size on every tap,
+ * which is what made it appear to shift shape when download or delete was
+ * pressed. Placed in the content, its position and size are this screen's
+ * and nothing re-lays them out.
+ *
+ * Both actions are drawn at the same fixed footprint for the same reason --
+ * the ring that replaces the save button mid-save occupies exactly what the
+ * button did, so the toolbar is the same width before, during and after.
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun ViewerActions(
+    current: FaceMatchResult,
+    savingPhoto: File?,
+    onSave: (FaceMatchResult) -> Unit,
+    onRemove: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    // The app's own surface rather than the viewer's black: the toolbar is a
+    // piece of the app laid over a photo, not part of the photo. Everything
+    // else on this screen is deliberately black to get out of the image's
+    // way; this is the one thing that should not disappear into it.
+    HorizontalFloatingToolbar(
+        modifier = modifier,
+        expanded = true,
+        colors = FloatingToolbarDefaults.standardFloatingToolbarColors(
+            toolbarContainerColor = MaterialTheme.colorScheme.background,
+            toolbarContentColor = MaterialTheme.colorScheme.onBackground,
+        ),
+    ) {
+        // One button that never swaps for something else. It used to become a
+        // wavy progress ring mid-save, and a ring measures taller than an
+        // icon, so the toolbar grew and shrank on every tap. Saving shows as
+        // the button going inert instead; the snackbar reports the outcome.
+        val saving = savingPhoto == current.photo
+        IconButton(
+            onClick = { onSave(current) },
+            // Stays tappable once saved: the user may have deleted the
+            // gallery copy since, and re-saving is a no-op when they haven't.
+            enabled = !saving,
+            modifier = Modifier.size(SnapFindDimens.toolbarAction),
+        ) {
+            Icon(
+                if (current.savedAt != null) Icons.Default.CheckCircle else Icons.Default.FileDownload,
+                contentDescription = when {
+                    saving -> "Saving to gallery"
+                    current.savedAt != null -> "Saved to gallery, tap to save again"
+                    else -> "Save to gallery"
+                },
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(SnapFindDimens.toolbarIcon),
+            )
+        }
+        IconButton(
+            onClick = onRemove,
+            modifier = Modifier.size(SnapFindDimens.toolbarAction),
+        ) {
+            // The same bin the selection bars use. It was a remove-circle to
+            // mark that this takes the photo out of the results without
+            // touching the user's own copy, but a distinction drawn only in
+            // an icon, on the one screen that draws it differently, teaches
+            // nobody. The confirmation says it in words.
+            Icon(
+                Icons.Default.Delete,
+                contentDescription = "Remove from matches",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(SnapFindDimens.toolbarIcon),
+            )
+        }
+    }
+}
