@@ -2,7 +2,6 @@ package com.example.snapfindai.presentation.components
 
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -23,6 +22,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.selected
@@ -61,6 +61,25 @@ import com.example.snapfindai.ui.theme.SnapFindSpacing
  * Null means "not in a selectable context", so non-selectable tiles neither
  * animate nor announce a state.
  */
+/**
+ * How dark the recess shadow starts, and how far down the photo it reaches as
+ * a fraction of the tile's height.
+ *
+ * These were an inline `0.22f` and `0.18f` on a hardcoded `Color.Black` -- the
+ * only undocumented non-token colour left in production code, in a file whose
+ * sibling `SnapFindSelectionIndicator` spends fifteen lines justifying the one
+ * literal colour it does use. The colour is now the theme's `scrim`, the role
+ * that exists for darkening content.
+ *
+ * It stays a darkening in both themes rather than inverting, because it is a
+ * shadow: a recess is darker than what surrounds it, and a *lighter* near edge
+ * would read as a bevel standing proud instead. That does mean it carries less
+ * on an already-dark photo -- which is why it was never the only cue. The tile
+ * also scales down, drops its elevation to zero, and wears a coral tick.
+ */
+private const val RecessShadowAlpha = 0.22f
+private const val RecessShadowDepth = 0.18f
+
 @Composable
 fun SnapFindPhotoCard(
     modifier: Modifier = Modifier,
@@ -77,6 +96,7 @@ fun SnapFindPhotoCard(
      */
     enabled: Boolean = true,
     onClick: (() -> Unit)? = null,
+    /** Requires [onClick] -- a long-press-only tile isn't supported, see below. */
     onLongClick: (() -> Unit)? = null,
     footer: @Composable (ColumnScope.() -> Unit)? = null,
     content: @Composable BoxScope.() -> Unit,
@@ -93,9 +113,17 @@ fun SnapFindPhotoCard(
     )
     val lift by animateDpAsState(
         targetValue = if (pressedIn) 0.dp else SnapFindDimens.elevation,
-        animationSpec = tween(),
+        // The same spring the scale uses, which is the point: these are two
+        // halves of one gesture. This was a bare `tween()`, so the shadow
+        // faded on an ease curve while the tile sprang -- different timing and
+        // different easing for a single movement, which is exactly the
+        // mismatch the comment above claims not to have.
+        animationSpec = SnapFindMotion.pressDp,
         label = "photo-card-lift",
     )
+    // Read here rather than inside drawWithContent, which is a DrawScope and
+    // not a composable, so it cannot reach MaterialTheme itself.
+    val recessShadow = MaterialTheme.colorScheme.scrim
     Card(
         modifier = modifier
             .fillMaxWidth()
@@ -119,10 +147,17 @@ fun SnapFindPhotoCard(
             // take the elevation shadow with it, since a shadow is drawn
             // outside the shape it falls from.
             modifier = Modifier.let {
-                if (onClick != null || onLongClick != null) {
+                // Gated on onClick specifically, where it used to be "either
+                // handler" with `onClick ?: {}` behind it. combinedClickable
+                // has no long-press-only form -- its onClick is non-null -- so
+                // a tile given only a long-press became a node that announces
+                // itself as clickable to a screen reader, ripples when tapped,
+                // and does nothing. Every caller passes a click, so that shape
+                // is now unsupported rather than quietly mis-built.
+                if (onClick != null) {
                     it.combinedClickable(
                         enabled = enabled,
-                        onClick = onClick ?: {},
+                        onClick = onClick,
                         onLongClick = onLongClick,
                     )
                 } else it
@@ -147,8 +182,8 @@ fun SnapFindPhotoCard(
                         if (pressedIn) {
                             drawRect(
                                 brush = Brush.verticalGradient(
-                                    0f to androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.22f),
-                                    0.18f to androidx.compose.ui.graphics.Color.Transparent,
+                                    0f to recessShadow.copy(alpha = RecessShadowAlpha),
+                                    RecessShadowDepth to Color.Transparent,
                                 ),
                             )
                         }

@@ -26,6 +26,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Devices
@@ -321,10 +323,29 @@ private fun ResultsFab(
     }
 }
 
+/**
+ * The bulk save action. [dimmed] while a batch is already running, when it is
+ * drawn muted and does nothing.
+ *
+ * `ExtendedFloatingActionButton` has no `enabled` parameter -- a FAB is meant
+ * to be the screen's one always-available action, so Material doesn't offer
+ * one -- and dropping the tap inside `onClick` left a control that *looked*
+ * disabled while still telling every screen reader it was actionable. Someone
+ * who can't see the muted colour got a button that reports itself as
+ * available and silently does nothing, which is worse than either state
+ * honestly rendered. `disabled()` states it in the semantics tree, so the two
+ * descriptions of this control finally agree.
+ *
+ * The ripple on touch stays, and is a Material limitation rather than a
+ * decision: a FAB's indication is wired to its own interaction source and
+ * can't be suppressed from outside. It is the lesser half of the problem --
+ * the tap is still ignored and now correctly announced.
+ */
 @Composable
 private fun SaveFab(label: String, dimmed: Boolean, onClick: () -> Unit) {
     ExtendedFloatingActionButton(
         onClick = { if (!dimmed) onClick() },
+        modifier = if (dimmed) Modifier.semantics { disabled() } else Modifier,
         containerColor = if (dimmed) {
             MaterialTheme.colorScheme.surfaceContainerHighest
         } else {

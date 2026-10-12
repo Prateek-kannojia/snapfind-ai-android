@@ -50,6 +50,13 @@ class OnboardingViewModel @Inject constructor(
      * or a delete landing on a file a fresh download has just started
      * writing. Pause and cancel both stop their coroutine without waiting for
      * it, which is what made that reachable by tapping.
+     *
+     * The slot itself needs no synchronisation, on an invariant worth stating
+     * since it is a plain `var` guarding a real resource: every function that
+     * touches it ([startDownload], [pauseDownload], [cancelDownload]) is
+     * called from the UI, and `viewModelScope` dispatches on `Main.immediate`,
+     * so all reads and writes happen on the main thread. The hand-off is
+     * ordered by that, not by the `Job` being thread-safe.
      */
     private var downloadJob: Job? = null
 

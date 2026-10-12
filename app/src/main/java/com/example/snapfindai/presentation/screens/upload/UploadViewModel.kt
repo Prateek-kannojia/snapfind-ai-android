@@ -103,6 +103,19 @@ class UploadViewModel @Inject constructor(
      * until it's pruned, so without remembering which one has already been
      * acted on, reopening the app would re-navigate (or re-show an error) for
      * a job dealt with long ago.
+     *
+     * A plain `var` among a class of flows, which is deliberate and rests on
+     * an invariant worth stating: it is confined to the main thread. It is
+     * read and written only inside [onceFor] -- which runs in the `WorkInfo`
+     * collector -- and reset in [submitJob], and `viewModelScope` dispatches
+     * on `Main.immediate`, so the check and the claim can't interleave.
+     * Moving either off the main dispatcher would turn this into a race.
+     *
+     * Not persisted, also deliberately. A process death between [onceFor]
+     * calling its block and `pruneWork()` clearing the record means a restart
+     * sees the same SUCCEEDED job and navigates to its results again -- which
+     * is the right outcome rather than a leak, since those results are exactly
+     * what the user was last doing.
      */
     private var handledWorkId: UUID? = null
 
