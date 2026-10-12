@@ -17,10 +17,8 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Error
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -32,7 +30,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Devices
 import androidx.compose.ui.tooling.preview.Preview
-import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
@@ -40,15 +37,18 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import coil.compose.AsyncImage
 import com.example.snapfindai.domain.model.FaceMatchResult
-import com.example.snapfindai.presentation.components.SnapFindButton
-import com.example.snapfindai.presentation.components.SnapFindButtonVariant
+import com.example.snapfindai.presentation.util.Thumbnail
+import com.example.snapfindai.presentation.components.SnapFindMark
+import com.example.snapfindai.presentation.components.SnapFindMarkState
 import com.example.snapfindai.presentation.components.SnapFindPhotoCard
 import com.example.snapfindai.presentation.components.SnapFindSelectionIndicator
 import com.example.snapfindai.presentation.components.SnapFindSnackbarHost
-import com.example.snapfindai.presentation.components.SnapFindStatusBadge
+import com.example.snapfindai.presentation.components.SnapFindFailedBadge
+import com.example.snapfindai.presentation.components.SnapFindSavedBadge
 import com.example.snapfindai.presentation.components.WavyProgressRing
 import com.example.snapfindai.presentation.components.SnapFindTopAppBar
 import com.example.snapfindai.presentation.util.rememberGallerySaveGate
+import com.example.snapfindai.ui.theme.ClayPillShape
 import com.example.snapfindai.ui.theme.SnapFindAITheme
 import com.example.snapfindai.ui.theme.SnapFindDimens
 import com.example.snapfindai.ui.theme.SnapFindSpacing
@@ -67,9 +67,6 @@ fun ResultsScreen(
 
     val saveToGallery = rememberGallerySaveGate()
 
-    // Coming back to this screen is the moment stale state would be visible:
-    // photos deleted from the gallery (which means leaving the app), and
-    // photos saved or removed in the viewer that sits on top of it.
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -97,9 +94,6 @@ fun ResultsScreen(
         viewModel.events.collect { event ->
             when (event) {
                 is ResultsEvent.BatchSaveCompleted -> {
-                    // Saving is idempotent, so "nothing new landed in your
-                    // gallery" is a normal outcome and has to read as one --
-                    // "0 photo(s) saved" would look like a failure.
                     val message = when {
                         event.failedCount > 0 && event.savedCount == 0 -> "Couldn't save ${event.failedCount} photo(s)"
                         event.failedCount > 0 -> "${event.savedCount} saved, ${event.failedCount} failed"
@@ -108,7 +102,6 @@ fun ResultsScreen(
                         else -> "${event.savedCount} photo(s) saved"
                     }
                     snackbarHostState.showSnackbar(message)
-                    // Nothing changed on disk means nothing worth a notification.
                     if (event.savedCount > 0 || event.failedCount > 0) {
                         DownloadNotificationHelper.showCompleted(context, event.savedCount, event.failedCount, event.lastSavedUri)
                     }
@@ -149,41 +142,42 @@ private fun ResultsContent(
     val loaded = state as? ResultsUiState.Loaded
     val selectionMode = loaded?.selectionMode == true
     val selectedCount = loaded?.selectedPhotos?.size ?: 0
+    val hasMatches = loaded != null && loaded.matches.isNotEmpty()
 
-    // While selecting, the system back gesture/button cancels the selection
-    // instead of navigating away -- same convention as Photos/Gmail/Drive.
-    // Disabled (and so inert) once selectionMode is false, letting back
-    // behave normally and actually leave the screen.
     BackHandler(enabled = selectionMode) { onClearSelection() }
 
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnapFindSnackbarHost(snackbarHostState) },
         topBar = {
             ResultsHeader(
                 selectionMode = selectionMode,
                 selectedCount = selectedCount,
-                hasMatches = loaded != null && loaded.matches.isNotEmpty(),
-                notSavedCount = loaded?.notSavedCount ?: 0,
                 operationInFlight = loaded?.operationInFlight == true,
                 onBack = onNavigateBack,
                 onClearSelection = onClearSelection,
-                onSaveSelected = onSaveSelected,
                 onRemoveSelected = onRemoveSelected,
-                onSaveAll = onSaveAll,
             )
-        }
+        },
+        floatingActionButton = {
+            ResultsFab(
+                hasMatches = hasMatches,
+                notSavedCount = loaded?.notSavedCount ?: 0,
+                selectionMode = selectionMode,
+                selectedCount = selectedCount,
+                operationInFlight = loaded?.operationInFlight == true,
+                onSaveAll = onSaveAll,
+                onSaveSelected = onSaveSelected,
+            )
+        },
     ) { paddingValues ->
         Column(modifier = Modifier.padding(paddingValues)) {
             loaded?.batchProgress?.let { progress ->
-                // The wavy track, to match the ring the rest of the app waits
-                // with -- a bar rather than a ring only because it belongs
-                // directly under the app bar, where a 104dp ring would shove
-                // the grid down the screen.
                 LinearWavyProgressIndicator(
                     progress = { progress.completed / progress.total.toFloat() },
                     modifier = Modifier.fillMaxWidth(),
                     color = MaterialTheme.colorScheme.primary,
-                    trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                    trackColor = MaterialTheme.colorScheme.secondaryContainer,
                 )
                 Text(
                     "Saving ${progress.completed} of ${progress.total}...",
@@ -195,14 +189,23 @@ private fun ResultsContent(
             when (state) {
                 is ResultsUiState.Loaded -> {
                     if (state.matches.isEmpty()) {
-                        Box(modifier = Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
-                            Text("No matches to display.")
-                        }
+                        EmptyResultsState(modifier = Modifier.fillMaxWidth().weight(1f))
                     } else {
+                        Text(
+                            resultsSummary(state),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = SnapFindSpacing.lg, vertical = SnapFindSpacing.sm),
+                        )
                         LazyVerticalGrid(
                             columns = GridCells.Fixed(2),
                             modifier = Modifier.fillMaxWidth().weight(1f),
-                            contentPadding = PaddingValues(SnapFindSpacing.sm),
+                            contentPadding = PaddingValues(
+                                start = SnapFindSpacing.sm,
+                                end = SnapFindSpacing.sm,
+                                top = SnapFindSpacing.sm,
+                                bottom = SnapFindDimens.minTouchTarget + SnapFindSpacing.xxl,
+                            ),
                             horizontalArrangement = Arrangement.spacedBy(SnapFindSpacing.grid),
                             verticalArrangement = Arrangement.spacedBy(SnapFindSpacing.grid)
                         ) {
@@ -221,14 +224,9 @@ private fun ResultsContent(
                 }
                 ResultsUiState.Loading -> {
                     Box(modifier = Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
-                        // The same waiting motif as onboarding and matching --
-                        // no fraction to report here, so no label either.
                         WavyProgressRing(progress = null)
                     }
                 }
-                // Distinct from an empty Loaded state, which says "nothing
-                // matched". This says "we couldn't find out", which is a
-                // different thing to tell someone.
                 is ResultsUiState.Error -> {
                     Box(
                         modifier = Modifier.fillMaxWidth().weight(1f).padding(SnapFindSpacing.xl),
@@ -247,19 +245,109 @@ private fun ResultsContent(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+private fun resultsSummary(state: ResultsUiState.Loaded): String = buildString {
+    val matchCount = state.matches.size
+    append("$matchCount match${if (matchCount == 1) "" else "es"}")
+    if (state.scannedCount > 0) append(" from ${state.scannedCount} photos")
+    if (state.savedCount > 0) append(" · ${state.savedCount} already saved")
+}
+
+@Composable
+private fun EmptyResultsState(modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        SnapFindMark(state = SnapFindMarkState.Quiet)
+        Spacer(modifier = Modifier.height(SnapFindSpacing.lg))
+        Text(
+            "Nothing left in this job",
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(modifier = Modifier.height(SnapFindSpacing.sm))
+        Text(
+            "Every matched photo has been removed. Photos you already saved to your gallery are still there.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(horizontal = SnapFindSpacing.xl),
+        )
+    }
+}
+
+@Composable
+private fun ResultsFab(
+    hasMatches: Boolean,
+    notSavedCount: Int,
+    selectionMode: Boolean,
+    selectedCount: Int,
+    operationInFlight: Boolean,
+    onSaveAll: () -> Unit,
+    onSaveSelected: () -> Unit,
+) {
+    if (!hasMatches) return
+    when {
+        selectionMode -> SaveFab(
+            label = "Save $selectedCount to gallery",
+            dimmed = operationInFlight,
+            onClick = onSaveSelected,
+        )
+        notSavedCount == 0 -> AllSavedChip()
+        else -> SaveFab(
+            label = "Save $notSavedCount to gallery",
+            dimmed = operationInFlight,
+            onClick = onSaveAll,
+        )
+    }
+}
+
+@Composable
+private fun SaveFab(label: String, dimmed: Boolean, onClick: () -> Unit) {
+    ExtendedFloatingActionButton(
+        onClick = { if (!dimmed) onClick() },
+        containerColor = if (dimmed) {
+            MaterialTheme.colorScheme.surfaceContainerHighest
+        } else {
+            MaterialTheme.colorScheme.primary
+        },
+        contentColor = if (dimmed) {
+            MaterialTheme.colorScheme.onSurfaceVariant
+        } else {
+            MaterialTheme.colorScheme.onPrimary
+        },
+    ) {
+        Text(label)
+    }
+}
+
+@Composable
+private fun AllSavedChip() {
+    Surface(
+        shape = ClayPillShape,
+        color = MaterialTheme.colorScheme.tertiaryContainer,
+        contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+        shadowElevation = SnapFindDimens.elevation,
+    ) {
+        Text(
+            "✓ All saved",
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = SnapFindSpacing.lg, vertical = SnapFindSpacing.md),
+        )
+    }
+}
+
 @Composable
 private fun ResultsHeader(
     selectionMode: Boolean,
     selectedCount: Int,
-    hasMatches: Boolean,
-    notSavedCount: Int,
     operationInFlight: Boolean,
     onBack: () -> Unit,
     onClearSelection: () -> Unit,
-    onSaveSelected: () -> Unit,
     onRemoveSelected: () -> Unit,
-    onSaveAll: () -> Unit,
 ) {
     AnimatedContent(
         targetState = selectionMode,
@@ -271,30 +359,17 @@ private fun ResultsHeader(
                 selectedCount = selectedCount,
                 operationInFlight = operationInFlight,
                 onClearSelection = onClearSelection,
-                onSaveSelected = onSaveSelected,
                 onRemoveSelected = onRemoveSelected,
             )
         } else {
-            DefaultTopAppBar(
-                hasMatches = hasMatches,
-                notSavedCount = notSavedCount,
-                operationInFlight = operationInFlight,
-                onBack = onBack,
-                onSaveAll = onSaveAll,
-            )
+            DefaultTopAppBar(onBack = onBack)
         }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun DefaultTopAppBar(
-    hasMatches: Boolean,
-    notSavedCount: Int,
-    operationInFlight: Boolean,
-    onBack: () -> Unit,
-    onSaveAll: () -> Unit,
-) {
+private fun DefaultTopAppBar(onBack: () -> Unit) {
     SnapFindTopAppBar(
         title = "Your Matches",
         navigationIcon = {
@@ -302,43 +377,15 @@ private fun DefaultTopAppBar(
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
             }
         },
-        actions = {
-            if (hasMatches) {
-                // The count states the outcome before the tap, which is what
-                // keeps "already saved photos aren't downloaded twice" from
-                // being a surprise. At zero there's nothing to promise, so
-                // the button says so and stops being tappable rather than
-                // sitting there doing nothing when pressed. Disabled rather
-                // than hidden so the bar doesn't reflow under a thumb.
-                SnapFindButton(
-                    text = if (notSavedCount == 0) "All saved" else "Download $notSavedCount",
-                    onClick = onSaveAll,
-                    enabled = notSavedCount > 0 && !operationInFlight,
-                    variant = SnapFindButtonVariant.Tonal,
-                    fillWidth = false,
-                    contentColor = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(end = SnapFindSpacing.sm),
-                )
-            }
-        },
     )
 }
 
-/**
- * Navigation swap: back-arrow becomes Close, which just clears the selection.
- * Action context: only batch-mutation actions here (download/remove the
- * selection) -- the bulk download belongs to the non-selecting bar, not this
- * one. The download label stays the bare verb because the title already
- * carries the count; "Download 12 selected" next to "12 selected" would say
- * it twice and crowd the title off a small screen.
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SelectionTopAppBar(
     selectedCount: Int,
     operationInFlight: Boolean,
     onClearSelection: () -> Unit,
-    onSaveSelected: () -> Unit,
     onRemoveSelected: () -> Unit,
 ) {
     SnapFindTopAppBar(
@@ -349,23 +396,11 @@ private fun SelectionTopAppBar(
             }
         },
         actions = {
-            // Both disabled together while anything is running. Saving and
-            // removing touch the same files, so the dangerous combination
-            // isn't two saves -- it's a removal landing while photos are
-            // mid-copy into the gallery.
-            SnapFindButton(
-                text = "Download",
-                onClick = onSaveSelected,
-                enabled = !operationInFlight,
-                variant = SnapFindButtonVariant.Tonal,
-                fillWidth = false,
-                contentColor = MaterialTheme.colorScheme.primary,
-            )
             IconButton(onClick = onRemoveSelected, enabled = !operationInFlight) {
                 Icon(
                     Icons.Default.Delete,
                     contentDescription = "Remove selected from matches",
-                    tint = MaterialTheme.colorScheme.primary,
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
                 )
             }
         },
@@ -387,7 +422,7 @@ private fun MatchCard(
         onLongClick = onLongClick,
     ) {
         AsyncImage(
-            model = item.match.photo,
+            model = Thumbnail(item.match.photo),
             contentDescription = "Matched Photo",
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize()
@@ -403,39 +438,17 @@ private fun MatchCard(
         if (!selectionMode) {
             val badgeModifier = Modifier.align(Alignment.BottomEnd).padding(SnapFindSpacing.xs)
 
-            // Status, not actions: downloading one photo lives in the viewer
-            // (tap the tile), downloading many lives in the app bar. A tile
-            // that also carried a download button would put a third control
-            // for the same verb on screen alongside those two.
             when (item.saveStatus) {
-                // Deliberately nothing while saving. A single photo takes a
-                // few hundred milliseconds, so a per-tile spinner is a flicker
-                // the user is unlikely to ever actually see -- multiplied
-                // across every tile in the grid. The progress bar under the
-                // app bar reports the batch, and each tick appearing is the
-                // per-photo feedback.
                 SaveStatus.Saving -> Unit
                 SaveStatus.Saved -> {
-                    // Same mark, same color as the selection tick -- a saved
-                    // photo and a selected one shouldn't read as two different
-                    // design languages.
-                    SnapFindStatusBadge(
-                        icon = Icons.Default.CheckCircle,
-                        contentDescription = "Saved",
-                        modifier = badgeModifier,
-                    )
+                    SnapFindSavedBadge(modifier = badgeModifier)
                 }
                 is SaveStatus.Failed -> {
-                    // The one tappable badge: retry is the only per-photo
-                    // action with no bulk equivalent to fall back on.
-                    SnapFindStatusBadge(
-                        icon = Icons.Default.Error,
-                        contentDescription = "Save failed, tap to retry",
-                        tint = MaterialTheme.colorScheme.error,
+                    SnapFindFailedBadge(
                         modifier = badgeModifier.clickable(onClick = onSaveClick),
                     )
                 }
-                SaveStatus.Idle -> Unit // nothing to report yet
+                SaveStatus.Idle -> Unit
             }
         }
     }
@@ -450,12 +463,6 @@ private val previewMatches = listOf(
     MatchItemState(FaceMatchResult(File("m4.jpg"), 0.47f, savedAt = null), SaveStatus.Idle),
 )
 
-/**
- * Every badge a tile can show. Failed is the reason this exists: it needs
- * real storage trouble to trigger, so this is the only place it can actually
- * be looked at. Saving is included to show what it deliberately looks like --
- * the same as Idle, since a per-tile spinner was a flicker nobody would see.
- */
 private val previewStatusMatches = listOf(
     MatchItemState(FaceMatchResult(File("s1.jpg"), 0.42f, savedAt = null), SaveStatus.Idle),
     MatchItemState(FaceMatchResult(File("s2.jpg"), 0.38f, savedAt = null), SaveStatus.Saving),
@@ -468,7 +475,7 @@ private val previewStatusMatches = listOf(
 private fun ResultsTileStatusesPreview() {
     SnapFindAITheme {
         ResultsContent(
-            uiState = ResultsUiState.Loaded(jobId = 1, matches = previewStatusMatches),
+            uiState = ResultsUiState.Loaded(jobId = 1, matches = previewStatusMatches, scannedCount = 24),
             snackbarHostState = remember { SnackbarHostState() },
             onNavigateBack = {}, onClearSelection = {}, onSaveSelected = {}, onRemoveSelected = {},
             onSaveAll = {}, onPhotoClick = { _, _ -> }, onToggleSelected = {}, onSaveToGallery = {},
@@ -476,7 +483,7 @@ private fun ResultsTileStatusesPreview() {
     }
 }
 
-@Preview(name = "All saved - bulk button disabled", showBackground = true)
+@Preview(name = "All saved", showBackground = true)
 @Composable
 private fun ResultsAllSavedPreview() {
     SnapFindAITheme {
@@ -484,6 +491,7 @@ private fun ResultsAllSavedPreview() {
             uiState = ResultsUiState.Loaded(
                 jobId = 1,
                 matches = previewMatches.map { it.copy(saveStatus = SaveStatus.Saved) },
+                scannedCount = 24,
             ),
             snackbarHostState = remember { SnackbarHostState() },
             onNavigateBack = {}, onClearSelection = {}, onSaveSelected = {}, onRemoveSelected = {},
@@ -497,7 +505,7 @@ private fun ResultsAllSavedPreview() {
 private fun ResultsLoadedPreview() {
     SnapFindAITheme {
         ResultsContent(
-            uiState = ResultsUiState.Loaded(jobId = 1, matches = previewMatches),
+            uiState = ResultsUiState.Loaded(jobId = 1, matches = previewMatches, scannedCount = 24),
             snackbarHostState = remember { SnackbarHostState() },
             onNavigateBack = {}, onClearSelection = {}, onSaveSelected = {}, onRemoveSelected = {},
             onSaveAll = {}, onPhotoClick = { _, _ -> }, onToggleSelected = {}, onSaveToGallery = {},
@@ -513,7 +521,7 @@ private fun ResultsSelectionModePreview() {
             uiState = ResultsUiState.Loaded(
                 jobId = 1,
                 matches = previewMatches,
-                // selectionMode is derived from this being non-empty -- no separate flag to set.
+                scannedCount = 24,
                 selectedPhotos = setOf(previewMatches[0].match.photo),
             ),
             snackbarHostState = remember { SnackbarHostState() },
@@ -528,7 +536,7 @@ private fun ResultsSelectionModePreview() {
 private fun ResultsBatchSavingPreview() {
     SnapFindAITheme {
         ResultsContent(
-            uiState = ResultsUiState.Loaded(jobId = 1, matches = previewMatches, batchProgress = BatchProgress(2, 4)),
+            uiState = ResultsUiState.Loaded(jobId = 1, matches = previewMatches, scannedCount = 24, batchProgress = BatchProgress(2, 4)),
             snackbarHostState = remember { SnackbarHostState() },
             onNavigateBack = {}, onClearSelection = {}, onSaveSelected = {}, onRemoveSelected = {},
             onSaveAll = {}, onPhotoClick = { _, _ -> }, onToggleSelected = {}, onSaveToGallery = {},
@@ -536,12 +544,12 @@ private fun ResultsBatchSavingPreview() {
     }
 }
 
-@Preview(name = "Empty", showBackground = true)
+@Preview(name = "Empty - every match removed", showBackground = true)
 @Composable
 private fun ResultsEmptyPreview() {
     SnapFindAITheme {
         ResultsContent(
-            uiState = ResultsUiState.Loaded(jobId = 1, matches = emptyList()),
+            uiState = ResultsUiState.Loaded(jobId = 1, matches = emptyList(), scannedCount = 24),
             snackbarHostState = remember { SnackbarHostState() },
             onNavigateBack = {}, onClearSelection = {}, onSaveSelected = {}, onRemoveSelected = {},
             onSaveAll = {}, onPhotoClick = { _, _ -> }, onToggleSelected = {}, onSaveToGallery = {},
@@ -567,7 +575,7 @@ private fun ResultsLoadingPreview() {
 private fun ResultsLoadedDarkPreview() {
     SnapFindAITheme(darkTheme = true) {
         ResultsContent(
-            uiState = ResultsUiState.Loaded(jobId = 1, matches = previewMatches),
+            uiState = ResultsUiState.Loaded(jobId = 1, matches = previewMatches, scannedCount = 24),
             snackbarHostState = remember { SnackbarHostState() },
             onNavigateBack = {}, onClearSelection = {}, onSaveSelected = {}, onRemoveSelected = {},
             onSaveAll = {}, onPhotoClick = { _, _ -> }, onToggleSelected = {}, onSaveToGallery = {},
@@ -580,7 +588,7 @@ private fun ResultsLoadedDarkPreview() {
 private fun ResultsSmallPhonePreview() {
     SnapFindAITheme {
         ResultsContent(
-            uiState = ResultsUiState.Loaded(jobId = 1, matches = previewMatches),
+            uiState = ResultsUiState.Loaded(jobId = 1, matches = previewMatches, scannedCount = 24),
             snackbarHostState = remember { SnackbarHostState() },
             onNavigateBack = {}, onClearSelection = {}, onSaveSelected = {}, onRemoveSelected = {},
             onSaveAll = {}, onPhotoClick = { _, _ -> }, onToggleSelected = {}, onSaveToGallery = {},
@@ -593,7 +601,7 @@ private fun ResultsSmallPhonePreview() {
 private fun ResultsLargePhonePreview() {
     SnapFindAITheme {
         ResultsContent(
-            uiState = ResultsUiState.Loaded(jobId = 1, matches = previewMatches),
+            uiState = ResultsUiState.Loaded(jobId = 1, matches = previewMatches, scannedCount = 24),
             snackbarHostState = remember { SnackbarHostState() },
             onNavigateBack = {}, onClearSelection = {}, onSaveSelected = {}, onRemoveSelected = {},
             onSaveAll = {}, onPhotoClick = { _, _ -> }, onToggleSelected = {}, onSaveToGallery = {},

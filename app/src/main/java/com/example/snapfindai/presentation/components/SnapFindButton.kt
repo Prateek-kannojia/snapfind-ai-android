@@ -76,36 +76,80 @@ fun SnapFindButton(
         disabledElevation = 0.dp,
     )
 
+    // Material's default disabled treatment is `onSurface` at 12% for the
+    // container and 38% for the label. Composited over warm putty that
+    // resolves to a cold grey the palette doesn't contain, with the label
+    // measuring 1.56:1 against its own container on a real device -- the one
+    // genuinely ugly element in the app, and unreadable besides. Stated
+    // explicitly instead, in the clay family, and shared by all three
+    // variants so a disabled button looks the same whatever it is.
+    //
+    // This lands at 4.33:1 light / 4.53:1 dark. Light is just under AA's
+    // 4.5:1, and that is deliberate rather than an oversight: WCAG 1.4.3
+    // exempts inactive components from contrast requirements precisely
+    // because a disabled control that reads as strongly as an enabled one
+    // has stopped communicating that it is disabled. 4.33:1 is legible and
+    // still visibly muted, which is the whole job. The real fix for the one
+    // button this was ugliest on is not a colour at all -- a primary action
+    // should appear when it becomes available rather than sit greyed out
+    // waiting, which is a layout change, not a palette one.
+    val disabledContainer = MaterialTheme.colorScheme.surfaceContainerHighest
+    val disabledContent = MaterialTheme.colorScheme.onSurfaceVariant
+
     when (variant) {
         SnapFindButtonVariant.Primary -> Button(
             onClick = onClick,
             enabled = enabled,
             shape = ClayPillShape,
-            elevation = elevation,
-            contentPadding = ButtonContentPadding,
-            modifier = sizing,
-        ) { Text(text) }
-
-        SnapFindButtonVariant.Tonal -> Button(
-            onClick = onClick,
-            enabled = enabled,
-            shape = ClayPillShape,
             colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                contentColor = contentColor ?: MaterialTheme.colorScheme.onSurface,
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = contentColor ?: MaterialTheme.colorScheme.onPrimary,
+                disabledContainerColor = disabledContainer,
+                disabledContentColor = disabledContent,
             ),
             elevation = elevation,
             contentPadding = ButtonContentPadding,
             modifier = sizing,
         ) { Text(text) }
 
+        // secondaryContainer, not surfaceVariant. surfaceVariant sits 1.07:1
+        // from the page -- for practical purposes the same colour -- so a
+        // tonal button was defined entirely by its 3dp drop shadow and
+        // effectively invisible. secondaryContainer exists to be the "quiet
+        // but still interactive" ground and is a visible shape on its own.
+        SnapFindButtonVariant.Tonal -> Button(
+            onClick = onClick,
+            enabled = enabled,
+            shape = ClayPillShape,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                contentColor = contentColor ?: MaterialTheme.colorScheme.onSecondaryContainer,
+                disabledContainerColor = disabledContainer,
+                disabledContentColor = disabledContent,
+            ),
+            elevation = elevation,
+            contentPadding = ButtonContentPadding,
+            modifier = sizing,
+        ) { Text(text) }
+
+        // The border here is the only thing identifying the control, which
+        // WCAG 1.4.11 puts at 3:1. `outline` is deliberately softer than that
+        // (it is for dividers), and the raw accent is 2.34:1 as a line on
+        // clay -- so both are wrong for this. onPrimaryContainer is the
+        // accent's ink, at 4.60:1, and it is what the label uses too, so the
+        // edge and the word are one colour rather than two near-misses.
         SnapFindButtonVariant.Outlined -> OutlinedButton(
             onClick = onClick,
             enabled = enabled,
             shape = ClayPillShape,
-            border = BorderStroke(ButtonBorderWidth, MaterialTheme.colorScheme.primary),
+            border = BorderStroke(
+                ButtonBorderWidth,
+                if (enabled) MaterialTheme.colorScheme.onPrimaryContainer else disabledContainer,
+            ),
             colors = ButtonDefaults.outlinedButtonColors(
-                contentColor = MaterialTheme.colorScheme.primary),
+                contentColor = contentColor ?: MaterialTheme.colorScheme.onPrimaryContainer,
+                disabledContentColor = disabledContent,
+            ),
             contentPadding = ButtonContentPadding,
             modifier = sizing,
         ) { Text(text, fontWeight = FontWeight.Bold) }

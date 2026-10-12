@@ -267,6 +267,7 @@ class JobHistoryRepositoryImpl @Inject constructor(
                     galleryName = it.galleryName,
                 )
             },
+            scannedCount = job.scoredCount,
         )
     }
 }

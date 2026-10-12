@@ -8,12 +8,15 @@ import androidx.lifecycle.viewModelScope
 import com.example.snapfindai.domain.model.FaceMatchResult
 import com.example.snapfindai.domain.usecase.GetJobUseCase
 import com.example.snapfindai.domain.usecase.GetLastJobUseCase
+import com.example.snapfindai.domain.usecase.PhotoSaveEvent
 import com.example.snapfindai.domain.usecase.ReconcileSavedPhotosUseCase
 import com.example.snapfindai.domain.usecase.RemoveMatchedPhotosUseCase
-import com.example.snapfindai.domain.usecase.PhotoSaveEvent
 import com.example.snapfindai.domain.usecase.SaveMatchedPhotosUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
+import java.io.File
+import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -21,8 +24,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import java.io.File
-import javax.inject.Inject
 
 /**
  * Owns Results-screen state independently of UploadViewModel -- loads a job
@@ -46,7 +47,14 @@ class ResultsViewModel @Inject constructor(
     private val _uiState = MutableStateFlow<ResultsUiState>(ResultsUiState.Loading)
     val uiState: StateFlow<ResultsUiState> = _uiState.asStateFlow()
 
-    private val _events = MutableSharedFlow<ResultsEvent>()
+    // Buffered and dropping rather than suspending: `emit` on a bare
+     // SharedFlow waits for a collector, which parks the coroutine that
+     // produced it whenever this screen isn't composed -- and a batch
+     // message delivered on some later visit is stale by then anyway.
+    private val _events = MutableSharedFlow<ResultsEvent>(
+        extraBufferCapacity = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
     val events: SharedFlow<ResultsEvent> = _events.asSharedFlow()
 
     init {
@@ -61,6 +69,7 @@ class ResultsViewModel @Inject constructor(
                 ResultsUiState.Loaded(
                     jobId = job?.id ?: -1L,
                     matches = matches.map { MatchItemState(it, statusFor(it)) },
+                    scannedCount = job?.scannedCount ?: 0,
                 )
             } catch (e: CancellationException) {
                 throw e
@@ -83,7 +92,12 @@ class ResultsViewModel @Inject constructor(
      */
     fun refresh() {
         val state = _uiState.value as? ResultsUiState.Loaded ?: return
-        if (state.batchProgress != null) return // mid-batch: statuses are being written right now
+        // operationInFlight, not batchProgress: a *removal* sets the former
+        // and leaves the latter null, so guarding on batchProgress let a
+        // resume-triggered refresh re-read and rebuild the match list while
+        // photos were being deleted out from under it -- the one case where
+        // the list on screen and the files on disk are mid-disagreement.
+        if (state.operationInFlight) return
         viewModelScope.launch {
             // Runs on every resume, and reconcile queries MediaStore -- the
             // most likely thing here to throw on an unusual device. A failed
@@ -105,6 +119,7 @@ class ResultsViewModel @Inject constructor(
                 val stillPresent = matches.map { it.photo }.toSet()
                 current.copy(
                     matches = matches.map { MatchItemState(it, failures[it.photo] ?: statusFor(it)) },
+                    scannedCount = job.scannedCount,
                     selectedPhotos = current.selectedPhotos intersect stillPresent,
                 )
             }

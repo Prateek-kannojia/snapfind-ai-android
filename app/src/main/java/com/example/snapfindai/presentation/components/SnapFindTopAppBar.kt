@@ -88,7 +88,7 @@ private fun TopAppBarPreviewContent() {
                         onClick = {},
                         variant = SnapFindButtonVariant.Tonal,
                         fillWidth = false,
-                        contentColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
                     )
                 },
             )
@@ -105,13 +105,13 @@ private fun TopAppBarPreviewContent() {
                         onClick = {},
                         variant = SnapFindButtonVariant.Tonal,
                         fillWidth = false,
-                        contentColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
                     )
                     IconButton(onClick = {}) {
                         Icon(
                             Icons.Default.Delete,
                             contentDescription = "Delete selected",
-                            tint = MaterialTheme.colorScheme.primary,
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
                         )
                     }
                 },

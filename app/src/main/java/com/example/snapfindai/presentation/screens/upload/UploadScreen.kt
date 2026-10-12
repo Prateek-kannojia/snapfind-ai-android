@@ -5,25 +5,37 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Devices
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -33,14 +45,20 @@ import com.example.snapfindai.domain.model.JobSummary
 import com.example.snapfindai.presentation.components.SnapFindButton
 import com.example.snapfindai.presentation.components.SnapFindButtonSlot
 import com.example.snapfindai.presentation.components.SnapFindButtonVariant
+import com.example.snapfindai.presentation.components.SnapFindMark
+import com.example.snapfindai.presentation.components.SnapFindMarkState
 import com.example.snapfindai.presentation.components.SnapFindPhotoCard
 import com.example.snapfindai.presentation.components.SnapFindSelectionIndicator
 import com.example.snapfindai.presentation.components.SnapFindSnackbarHost
 import com.example.snapfindai.presentation.components.SnapFindTopAppBar
 import com.example.snapfindai.presentation.components.WavyProgressRing
+import com.example.snapfindai.presentation.util.Thumbnail
 import com.example.snapfindai.presentation.util.rememberGallerySaveGate
 import com.example.snapfindai.utils.DownloadNotificationHelper
+import com.example.snapfindai.ui.theme.ClayPillShape
+import com.example.snapfindai.ui.theme.ClayShapes
 import com.example.snapfindai.ui.theme.SnapFindAITheme
+import com.example.snapfindai.ui.theme.SnapFindDimens
 import com.example.snapfindai.ui.theme.SnapFindSpacing
 import java.io.File
 
@@ -54,10 +72,10 @@ fun UploadScreen(
     val jobHistory by viewModel.jobHistory.collectAsState()
     val context = LocalContext.current
 
-    // Owned by the ViewModel, so a rotation doesn't discard what was picked
-    // and ending a job can clear it -- see UploadViewModel.
     val selfieUri by viewModel.selfieUri.collectAsState()
     val zipUri by viewModel.zipUri.collectAsState()
+    val zipFileName by viewModel.zipFileName.collectAsState()
+    val zipFileSizeBytes by viewModel.zipFileSizeBytes.collectAsState()
 
     val selfieLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -65,10 +83,8 @@ fun UploadScreen(
 
     val zipLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
-    ) { uri: Uri? -> viewModel.onZipPicked(uri) }
+    ) { uri: Uri? -> viewModel.onZipPicked(context, uri) }
 
-    // One-shot: fires exactly once per successful job, not derived from
-    // uiState -- see UploadViewModel.navigateToResults for why.
     LaunchedEffect(Unit) {
         viewModel.navigateToResults.collect { onNavigateToResults() }
     }
@@ -82,9 +98,6 @@ fun UploadScreen(
         viewModel.events.collect { event ->
             when (event) {
                 is UploadEvent.BatchSaveCompleted -> {
-                    // Worded exactly as the results screen words it: saving is
-                    // idempotent, so "nothing new landed" is a normal outcome
-                    // and must not read as a failure.
                     val message = when {
                         event.failedCount > 0 && event.savedCount == 0 -> "Couldn't save ${event.failedCount} photo(s)"
                         event.failedCount > 0 -> "${event.savedCount} saved, ${event.failedCount} failed"
@@ -106,8 +119,10 @@ fun UploadScreen(
     UploadContent(
         uiState = uiState,
         jobHistory = jobHistory,
-        hasSelfie = selfieUri != null,
+        selfieUri = selfieUri,
         hasZip = zipUri != null,
+        zipFileName = zipFileName,
+        zipFileSizeBytes = zipFileSizeBytes,
         selectedJobs = selectedJobs,
         operationInFlight = operationInFlight,
         snackbarHostState = snackbarHostState,
@@ -128,8 +143,10 @@ fun UploadScreen(
 private fun UploadContent(
     uiState: UploadUiState,
     jobHistory: List<JobSummary>,
-    hasSelfie: Boolean,
+    selfieUri: Uri?,
     hasZip: Boolean,
+    zipFileName: String?,
+    zipFileSizeBytes: Long?,
     selectedJobs: Set<Long> = emptySet(),
     operationInFlight: Boolean = false,
     snackbarHostState: SnackbarHostState = remember { SnackbarHostState() },
@@ -143,13 +160,11 @@ private fun UploadContent(
     onToggleJobSelected: (Long) -> Unit = {},
     onClearSelection: () -> Unit = {},
 ) {
-    // Set when the delete is confirmed rather than per card, so only one
-    // dialog can ever be open and it always describes the whole selection.
-    var confirmingDelete by remember { mutableStateOf(false) }
+    var confirmingDelete by rememberSaveable { mutableStateOf(false) }
     val selectionMode = selectedJobs.isNotEmpty()
+    val hasSelfie = selfieUri != null
+    val armed = hasSelfie && hasZip
 
-    // Disabled (and so inert) once nothing is selected, letting back behave
-    // normally again -- the same rule the results grid uses.
     BackHandler(enabled = selectionMode) { onClearSelection() }
 
     Scaffold(
@@ -176,93 +191,90 @@ private fun UploadContent(
             return@Scaffold
         }
 
-        // The form stays put and only the jobs scroll. The two were one
-        // scrolling surface before, which read as the whole screen sliding
-        // away to reach a grid -- the controls you came to use shouldn't
-        // leave the screen to look at what you made with them.
-        //
-        // That split is also what lets the grid be lazy: it takes the height
-        // the form leaves (`weight(1f)`), and a bounded height is exactly
-        // what a vertically scrolling grid needs. Inside an outer scroll it
-        // would be measured with unbounded height and throw, which is why
-        // this used to be a hand-wrapped grid that composed every job at
-        // once.
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .padding(horizontal = SnapFindSpacing.screenHorizontal),
-        ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(SnapFindSpacing.md)) {
-                StepColumn(modifier = Modifier.weight(1f), label = "STEP 1") {
-                    SnapFindButton(
-                        text = if (!hasSelfie) "Choose Selfie" else "Selected",
-                        onClick = onChooseSelfie,
-                        variant = SnapFindButtonVariant.Tonal,
-                    )
-                }
-                StepColumn(modifier = Modifier.weight(1f), label = "STEP 2") {
-                    SnapFindButton(
-                        text = if (!hasZip) "Choose ZIP" else "Selected",
-                        onClick = onChooseZip,
-                        variant = SnapFindButtonVariant.Outlined,
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(SnapFindSpacing.xl))
-
-            SnapFindButton(text = "Find My Photos", onClick = onSubmit, enabled = hasSelfie && hasZip)
-
-            if (uiState is UploadUiState.Error) {
-                Spacer(modifier = Modifier.height(SnapFindSpacing.lg))
-                Text(uiState.message, color = MaterialTheme.colorScheme.error)
-            }
-
-            if (jobHistory.isNotEmpty()) {
-                Row(
+        Box(modifier = Modifier.fillMaxSize().padding(paddingValues)) {
+            if (jobHistory.isEmpty()) {
+                Column(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = SnapFindSpacing.section, bottom = SnapFindSpacing.xs),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
+                        .fillMaxSize()
+                        .padding(horizontal = SnapFindSpacing.screenHorizontal),
                 ) {
-                    Text(
-                        "Recent Jobs",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
+                    UploadForm(
+                        hasSelfie = hasSelfie,
+                        selfieUri = selfieUri,
+                        hasZip = hasZip,
+                        zipFileName = zipFileName,
+                        zipFileSizeBytes = zipFileSizeBytes,
+                        onChooseSelfie = onChooseSelfie,
+                        onChooseZip = onChooseZip,
                     )
-                    // The cost of keeping these, stated where the user can see
-                    // it. Each job holds a full-resolution copy of every photo
-                    // it matched, and without a number on screen there is no
-                    // reason to ever delete one -- the first place anybody
-                    // would notice is the system settings screen.
-                    Text(
-                        formatBytes(jobHistory.sumOf { it.sizeBytes }),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+
+                    if (uiState is UploadUiState.Error) {
+                        Spacer(modifier = Modifier.height(SnapFindSpacing.lg))
+                        Text(uiState.message, color = MaterialTheme.colorScheme.error)
+                    }
+
+                    AnimatedVisibility(
+                        visible = armed,
+                        enter = fadeIn() + expandVertically(),
+                        exit = fadeOut() + shrinkVertically(),
+                    ) {
+                        Column {
+                            Spacer(modifier = Modifier.height(SnapFindSpacing.lg))
+                            SnapFindButton(text = "Find My Photos", onClick = onSubmit)
+                            Spacer(modifier = Modifier.height(SnapFindSpacing.sm))
+                            SnapFindButtonSlot { PrivacyChip() }
+                        }
+                    }
+
+                    EmptyUploadState(
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                        showChip = !armed,
                     )
                 }
-
+            } else {
+                val dockedCtaReserve = SnapFindDimens.minTouchTarget + SnapFindSpacing.xxl
                 LazyVerticalGrid(
                     columns = GridCells.Fixed(2),
-                    modifier = Modifier.fillMaxWidth().weight(1f),
-                    contentPadding = PaddingValues(bottom = SnapFindSpacing.lg),
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(
+                        start = SnapFindSpacing.screenHorizontal,
+                        end = SnapFindSpacing.screenHorizontal,
+                        top = SnapFindSpacing.lg,
+                        bottom = if (armed) dockedCtaReserve else SnapFindSpacing.lg,
+                    ),
                     horizontalArrangement = Arrangement.spacedBy(SnapFindSpacing.grid),
                     verticalArrangement = Arrangement.spacedBy(SnapFindSpacing.grid),
                 ) {
-                    // Keyed by job id, so scrolling away and back reuses a
-                    // card rather than rebuilding it, and deleting one does
-                    // not shuffle every card after it onto a different slot.
+                    if (!selectionMode) {
+                        item(span = { GridItemSpan(maxLineSpan) }) {
+                            Column {
+                                UploadForm(
+                                    hasSelfie = hasSelfie,
+                                    selfieUri = selfieUri,
+                                    hasZip = hasZip,
+                                    zipFileName = zipFileName,
+                                    zipFileSizeBytes = zipFileSizeBytes,
+                                    onChooseSelfie = onChooseSelfie,
+                                    onChooseZip = onChooseZip,
+                                )
+                                if (uiState is UploadUiState.Error) {
+                                    Spacer(modifier = Modifier.height(SnapFindSpacing.lg))
+                                    Text(uiState.message, color = MaterialTheme.colorScheme.error)
+                                }
+                                Spacer(modifier = Modifier.height(SnapFindSpacing.section))
+                            }
+                        }
+                    }
+
+                    stickyHeader {
+                        RecentJobsHeader(totalBytes = jobHistory.sumOf { it.sizeBytes })
+                    }
+
                     items(jobHistory, key = { it.id }) { job ->
                         JobHistoryCard(
                             job = job,
                             selectionMode = selectionMode,
                             isSelected = job.id in selectedJobs,
-                            // While selecting, a tap toggles instead of
-                            // opening -- the same rule as the results grid, so
-                            // the gesture doesn't change meaning between the
-                            // two screens.
                             onClick = {
                                 if (selectionMode) onToggleJobSelected(job.id) else onOpenJob(job.id)
                             },
@@ -270,6 +282,15 @@ private fun UploadContent(
                         )
                     }
                 }
+            }
+
+            AnimatedVisibility(
+                visible = jobHistory.isNotEmpty() && armed,
+                modifier = Modifier.align(Alignment.BottomCenter),
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically(),
+            ) {
+                DockedCta(onSubmit = onSubmit)
             }
         }
     }
@@ -287,12 +308,6 @@ private fun UploadContent(
     }
 }
 
-/**
- * States the whole cost before the tap, and the one guarantee that makes it
- * tappable: the gallery is untouched. That is structural rather than careful
- * -- `deleteJob` addresses this app's own storage and names no MediaStore
- * path at all -- which is why it can be promised here.
- */
 @Composable
 private fun DeleteJobsDialog(jobs: List<JobSummary>, onConfirm: () -> Unit, onDismiss: () -> Unit) {
     val photoCount = jobs.sumOf { it.matchCount }
@@ -312,11 +327,6 @@ private fun DeleteJobsDialog(jobs: List<JobSummary>, onConfirm: () -> Unit, onDi
     )
 }
 
-/**
- * The same two-bar arrangement as the results grid, for the same reason:
- * selection *replaces* the default bar rather than adding to it, so no two
- * sets of actions are ever on screen together.
- */
 @Composable
 private fun UploadHeader(
     selectionMode: Boolean,
@@ -348,21 +358,9 @@ private fun UploadHeader(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun UploadDefaultTopAppBar() {
-    // No navigation icon: this is the root screen, and a back arrow here
-    // would offer to leave the app. No actions either -- there is no
-    // "download everything" that means anything across unrelated jobs.
     SnapFindTopAppBar(title = "SnapFind AI")
 }
 
-/**
- * Close clears the selection, exactly as the results grid does, so the
- * gesture to get out of selecting is the same on both screens.
- *
- * The download label stays the bare verb because the title already carries
- * the count. Both actions are disabled together while anything runs: they
- * touch the same files, and the dangerous combination isn't two downloads --
- * it's a delete landing while photos are mid-copy into the gallery.
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun UploadSelectionTopAppBar(
@@ -386,20 +384,19 @@ private fun UploadSelectionTopAppBar(
                 enabled = !operationInFlight,
                 variant = SnapFindButtonVariant.Tonal,
                 fillWidth = false,
-                contentColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
             )
             IconButton(onClick = onDeleteSelected, enabled = !operationInFlight) {
                 Icon(
                     Icons.Default.Delete,
                     contentDescription = "Delete selected jobs",
-                    tint = MaterialTheme.colorScheme.primary,
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
                 )
             }
         },
     )
 }
 
-/** Rounded to whole units: this is a sense of scale, not an accounting figure. */
 private fun formatBytes(bytes: Long): String = when {
     bytes >= 1024L * 1024 * 1024 -> "%.1f GB".format(bytes / (1024.0 * 1024 * 1024))
     bytes >= 1024L * 1024 -> "${bytes / (1024 * 1024)} MB"
@@ -407,24 +404,245 @@ private fun formatBytes(bytes: Long): String = when {
     else -> "0 KB"
 }
 
-/** "Step N" label + its button, sharing one column so the two steps line up regardless of button label length. */
 @Composable
-private fun StepColumn(modifier: Modifier = Modifier, label: String, button: @Composable () -> Unit) {
-    Column(modifier = modifier) {
-        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Spacer(modifier = Modifier.height(SnapFindSpacing.xs))
-        button()
+private fun UploadForm(
+    hasSelfie: Boolean,
+    selfieUri: Uri?,
+    hasZip: Boolean,
+    zipFileName: String?,
+    zipFileSizeBytes: Long?,
+    onChooseSelfie: () -> Unit,
+    onChooseZip: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(SnapFindSpacing.sm)) {
+        StepRow(
+            done = hasSelfie,
+            showBorder = !hasSelfie,
+            title = if (hasSelfie) "Your selfie" else "Add your selfie",
+            subtitle = if (hasSelfie) "Tap to change" else "One clear photo of your face",
+            leading = {
+                if (hasSelfie) {
+                    AsyncImage(
+                        model = selfieUri,
+                        contentDescription = "Your selfie",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.size(SnapFindDimens.stepThumbnailSize).clip(CircleShape),
+                    )
+                } else {
+                    StepBadge(number = 1)
+                }
+            },
+            onClick = onChooseSelfie,
+        )
+        StepRow(
+            done = hasZip,
+            showBorder = !hasZip && hasSelfie,
+            title = if (hasZip) (zipFileName ?: "Zip file selected") else "Add the event photos",
+            subtitle = if (hasZip) {
+                zipFileSizeBytes?.let(::formatBytes) ?: "Tap to change"
+            } else {
+                "A .zip folder from the event"
+            },
+            leading = {
+                if (hasZip) {
+                    Box(
+                        modifier = Modifier
+                            .size(SnapFindDimens.stepThumbnailSize)
+                            .clip(ClayShapes.small)
+                            .background(MaterialTheme.colorScheme.secondaryContainer),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Default.FolderZip,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                        )
+                    }
+                } else {
+                    StepBadge(number = 2)
+                }
+            },
+            onClick = onChooseZip,
+        )
     }
 }
 
-/**
- * A plain wrapping 2-column grid, not LazyVerticalGrid -- Recent Jobs is
- * a short list, and a Lazy grid needs its own bounded height to coexist
- * with the outer scrollable Column, which just re-introduces the "reserve
- * a bunch of space whether or not there's content for it" problem this is
- * fixing. If Recent Jobs ever needs to show many dozens of jobs, that's
- * the point to reintroduce a properly height-constrained Lazy grid.
- */
+@Composable
+private fun StepRow(
+    done: Boolean,
+    showBorder: Boolean,
+    title: String,
+    subtitle: String,
+    leading: @Composable () -> Unit,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth().heightIn(min = SnapFindDimens.minTouchTarget),
+        shape = ClayShapes.medium,
+        color = if (done) {
+            MaterialTheme.colorScheme.secondaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerLow
+        },
+        border = if (showBorder) {
+            BorderStroke(1.5.dp, MaterialTheme.colorScheme.onPrimaryContainer)
+        } else null,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = SnapFindSpacing.md, vertical = SnapFindSpacing.sm),
+            horizontalArrangement = Arrangement.spacedBy(SnapFindSpacing.md),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            leading()
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (done) {
+                Icon(
+                    Icons.Default.Edit,
+                    contentDescription = "Change",
+                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun StepBadge(number: Int) {
+    Box(
+        modifier = Modifier
+            .size(SnapFindDimens.stepThumbnailSize)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            number.toString(),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+    }
+}
+
+@Composable
+private fun PrivacyChip() {
+    Row(
+        modifier = Modifier
+            .background(MaterialTheme.colorScheme.tertiaryContainer, ClayPillShape)
+            .padding(horizontal = SnapFindSpacing.md, vertical = SnapFindSpacing.xs),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(SnapFindSpacing.xs),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(SnapFindDimens.chipDotSize)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.onTertiaryContainer),
+        )
+        Text(
+            "Runs on your phone · nothing uploaded",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onTertiaryContainer,
+        )
+    }
+}
+
+@Composable
+private fun EmptyUploadState(modifier: Modifier = Modifier, showChip: Boolean) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        SnapFindMark(state = SnapFindMarkState.Active)
+        Spacer(modifier = Modifier.height(SnapFindSpacing.lg))
+        Text(
+            "Find yourself in the pile",
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(modifier = Modifier.height(SnapFindSpacing.sm))
+        Text(
+            "Drop in a folder of event photos and SnapFind pulls out the ones with your face in them.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(horizontal = SnapFindSpacing.xl),
+        )
+        if (showChip) {
+            Spacer(modifier = Modifier.height(SnapFindSpacing.lg))
+            PrivacyChip()
+        }
+    }
+}
+
+@Composable
+private fun RecentJobsHeader(totalBytes: Long) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.background),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = SnapFindSpacing.md, bottom = SnapFindSpacing.xs),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "Recent Jobs",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                formatBytes(totalBytes),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        Spacer(modifier = Modifier.height(SnapFindSpacing.xs))
+    }
+}
+
+@Composable
+private fun DockedCta(onSubmit: () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.background,
+    ) {
+        Column {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Box(
+                modifier = Modifier.padding(
+                    horizontal = SnapFindSpacing.screenHorizontal,
+                    vertical = SnapFindSpacing.sm,
+                ),
+            ) {
+                SnapFindButton(text = "Find My Photos", onClick = onSubmit)
+            }
+        }
+    }
+}
+
 @Composable
 private fun MatchingProgress(
     modifier: Modifier = Modifier,
@@ -437,10 +655,6 @@ private fun MatchingProgress(
             .padding(horizontal = SnapFindSpacing.xl),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        // Flexible spacers, not a blanket Arrangement.Center over the whole
-        // screen -- the content group centers as a unit within whatever
-        // space is available, instead of the layout depending on exactly
-        // how tall the device is.
         Spacer(modifier = Modifier.weight(1f))
 
         val fraction = if (state.scored != null && state.total != null && state.total > 0) {
@@ -473,13 +687,6 @@ private fun MatchingProgress(
             )
         }
 
-        // A real event folder takes minutes, so this screen can't be a
-        // one-way door. Tonal rather than primary: stopping is the secondary
-        // action here, the job itself is the point.
-        // Full width, like every other Cancel in the app. Sized to its own
-        // text it came out noticeably smaller than the one on the onboarding
-        // sheet, which made the same action look like a different, lesser one
-        // depending on the screen it was on.
         SnapFindButtonSlot(modifier = Modifier.padding(top = SnapFindSpacing.xl)) {
             SnapFindButton(
                 text = "Cancel",
@@ -501,12 +708,6 @@ private fun JobHistoryCard(
     onClick: () -> Unit,
     onLongClick: () -> Unit,
 ) {
-    // The photo stays square and the details sit on the card's own surface
-    // below it, rather than in a scrim floated over the bottom of the image.
-    // A scrim has to darken whatever happens to be under it, so it is either
-    // too heavy for a pale photo or too weak for a busy one; a strip of the
-    // card is legible against every photo because it is not over one.
-    // Long-press starts selecting, the same gesture the results grid uses.
     SnapFindPhotoCard(
         modifier = modifier,
         aspectRatio = 1f,
@@ -520,10 +721,6 @@ private fun JobHistoryCard(
                 color = MaterialTheme.colorScheme.onSurface,
                 fontWeight = FontWeight.Bold
             )
-            // What this job is costing, on the line the timestamp used to
-            // take. The heading above the grid gives the total; this says
-            // which job the total is mostly made of, which is the thing a
-            // user deciding what to delete actually needs.
             Text(
                 formatBytes(job.sizeBytes),
                 style = MaterialTheme.typography.labelSmall,
@@ -533,7 +730,7 @@ private fun JobHistoryCard(
     ) {
         if (job.previewPhoto != null) {
             AsyncImage(
-                model = job.previewPhoto,
+                model = Thumbnail(job.previewPhoto),
                 contentDescription = "Job with ${job.matchCount} matched photos",
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),
@@ -555,14 +752,8 @@ private fun JobHistoryCard(
 }
 
 // ---- Previews: Design > Split view in Android Studio, no build/install needed ----
-// Job/photo previewPhoto Files are fake paths -- Coil can't load them in a
-// preview (no real file I/O), so cards fall back to the placeholder icon.
-// That's expected here, not a bug.
 
 private val previewJobs = listOf(
-    // Sizes are realistic rather than round: a matched photo is a
-    // full-resolution copy, so a dozen of them is tens of megabytes. The
-    // preview is where the total's formatting gets checked.
     JobSummary(id = 1, timestamp = System.currentTimeMillis(), matchCount = 12, previewPhoto = File("preview.jpg"), sizeBytes = 31_457_280),
     JobSummary(id = 2, timestamp = System.currentTimeMillis() - 86_400_000, matchCount = 4, previewPhoto = null, sizeBytes = 10_485_760),
     JobSummary(id = 3, timestamp = System.currentTimeMillis() - 172_800_000, matchCount = 1, previewPhoto = null, sizeBytes = 2_621_440),
@@ -575,9 +766,27 @@ private fun UploadIdleEmptyPreview() {
         UploadContent(
             uiState = UploadUiState.Idle,
             jobHistory = emptyList(),
-            hasSelfie = false,
+            selfieUri = null,
             hasZip = false,
-            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {}, 
+            zipFileName = null,
+            zipFileSizeBytes = null,
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
+        )
+    }
+}
+
+@Preview(name = "Idle - first step done", showBackground = true)
+@Composable
+private fun UploadIdlePartialPreview() {
+    SnapFindAITheme {
+        UploadContent(
+            uiState = UploadUiState.Idle,
+            jobHistory = emptyList(),
+            selfieUri = Uri.parse("content://preview/selfie.jpg"),
+            hasZip = false,
+            zipFileName = null,
+            zipFileSizeBytes = null,
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
         )
     }
 }
@@ -589,9 +798,11 @@ private fun UploadIdleReadyPreview() {
         UploadContent(
             uiState = UploadUiState.Idle,
             jobHistory = previewJobs,
-            hasSelfie = true,
+            selfieUri = Uri.parse("content://preview/selfie.jpg"),
             hasZip = true,
-            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {}, 
+            zipFileName = "goa-trip-2026.zip",
+            zipFileSizeBytes = 412_000_000,
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
         )
     }
 }
@@ -601,15 +812,13 @@ private fun UploadIdleReadyPreview() {
 private fun UploadErrorPreview() {
     SnapFindAITheme {
         UploadContent(
-            // Matches what the ViewModel actually emits. It used to offer "or
-            // a higher threshold", which named a control the app has never
-            // had -- a preview is where that kind of copy survives longest,
-            // because nothing fails when it drifts from the real string.
             uiState = UploadUiState.Error("No matches found. Try a clearer selfie."),
             jobHistory = previewJobs,
-            hasSelfie = true,
+            selfieUri = null,
             hasZip = true,
-            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {}, 
+            zipFileName = "goa-trip-2026.zip",
+            zipFileSizeBytes = 412_000_000,
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
         )
     }
 }
@@ -621,9 +830,11 @@ private fun UploadMatchingIndeterminatePreview() {
         UploadContent(
             uiState = UploadUiState.Processing(),
             jobHistory = emptyList(),
-            hasSelfie = true,
+            selfieUri = Uri.parse("content://preview/selfie.jpg"),
             hasZip = true,
-            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {}, 
+            zipFileName = "goa-trip-2026.zip",
+            zipFileSizeBytes = 412_000_000,
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
         )
     }
 }
@@ -635,9 +846,28 @@ private fun UploadMatchingProgressPreview() {
         UploadContent(
             uiState = UploadUiState.Processing(scored = 18, total = 24),
             jobHistory = emptyList(),
-            hasSelfie = true,
+            selfieUri = Uri.parse("content://preview/selfie.jpg"),
             hasZip = true,
-            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {}, 
+            zipFileName = "goa-trip-2026.zip",
+            zipFileSizeBytes = 412_000_000,
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
+        )
+    }
+}
+
+@Preview(name = "Selecting jobs", showBackground = true)
+@Composable
+private fun UploadSelectionPreview() {
+    SnapFindAITheme {
+        UploadContent(
+            uiState = UploadUiState.Idle,
+            jobHistory = previewJobs,
+            selfieUri = null,
+            hasZip = false,
+            zipFileName = null,
+            zipFileSizeBytes = null,
+            selectedJobs = setOf(1L, 2L),
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
         )
     }
 }
@@ -649,9 +879,11 @@ private fun UploadIdleDarkPreview() {
         UploadContent(
             uiState = UploadUiState.Idle,
             jobHistory = previewJobs,
-            hasSelfie = false,
+            selfieUri = null,
             hasZip = false,
-            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {}, 
+            zipFileName = null,
+            zipFileSizeBytes = null,
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
         )
     }
 }
@@ -663,9 +895,11 @@ private fun UploadSmallPhonePreview() {
         UploadContent(
             uiState = UploadUiState.Idle,
             jobHistory = previewJobs,
-            hasSelfie = true,
+            selfieUri = Uri.parse("content://preview/selfie.jpg"),
             hasZip = true,
-            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {}, 
+            zipFileName = "goa-trip-2026.zip",
+            zipFileSizeBytes = 412_000_000,
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
         )
     }
 }
@@ -677,9 +911,11 @@ private fun UploadLargePhonePreview() {
         UploadContent(
             uiState = UploadUiState.Idle,
             jobHistory = previewJobs,
-            hasSelfie = true,
+            selfieUri = Uri.parse("content://preview/selfie.jpg"),
             hasZip = true,
-            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {}, 
+            zipFileName = "goa-trip-2026.zip",
+            zipFileSizeBytes = 412_000_000,
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
         )
     }
 }

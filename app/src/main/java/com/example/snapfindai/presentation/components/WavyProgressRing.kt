@@ -58,7 +58,7 @@ fun WavyProgressRing(
                 progress = { progress },
                 modifier = Modifier.size(size),
                 color = MaterialTheme.colorScheme.primary,
-                trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                trackColor = MaterialTheme.colorScheme.secondaryContainer,
                 stroke = stroke,
                 trackStroke = stroke,
             )
@@ -66,7 +66,7 @@ fun WavyProgressRing(
             CircularWavyProgressIndicator(
                 modifier = Modifier.size(size),
                 color = MaterialTheme.colorScheme.primary,
-                trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                trackColor = MaterialTheme.colorScheme.secondaryContainer,
                 stroke = stroke,
                 trackStroke = stroke,
             )

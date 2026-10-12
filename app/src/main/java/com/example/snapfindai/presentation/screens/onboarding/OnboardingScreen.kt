@@ -2,20 +2,20 @@ package com.example.snapfindai.presentation.screens.onboarding
 
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CloudDownload
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material3.FloatingActionButton
-import androidx.compose.material3.FloatingActionButtonDefaults
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -26,21 +26,24 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Devices
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.example.snapfindai.presentation.components.SnapFindButton
 import com.example.snapfindai.presentation.components.SnapFindButtonSlot
 import com.example.snapfindai.presentation.components.SnapFindButtonVariant
+import com.example.snapfindai.presentation.components.SnapFindMark
+import com.example.snapfindai.presentation.components.SnapFindMarkState
 import com.example.snapfindai.presentation.components.WavyProgressRing
 import com.example.snapfindai.ui.theme.SnapFindAITheme
 import com.example.snapfindai.ui.theme.SnapFindDimens
 import com.example.snapfindai.ui.theme.SnapFindSpacing
-import org.w3c.dom.Text
 
 @Composable
 fun OnboardingScreen(
@@ -67,19 +70,17 @@ private fun OnboardingContent(
     onPause: () -> Unit = {},
 ) {
     Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
-        Box(
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
+                .padding(padding),
         ) {
-            Hero(modifier = Modifier.fillMaxSize())
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .align(Alignment.BottomCenter)
-            ) {
+            val sheetMinHeight = maxHeight * SnapFindDimens.sheetMinHeightFraction
+            Column(modifier = Modifier.fillMaxSize()) {
+                Hero(modifier = Modifier.weight(1f).fillMaxWidth())
                 Sheet(
                     modifier = Modifier.fillMaxWidth(),
+                    minHeight = sheetMinHeight,
                     uiState = uiState,
                     onStart = onStart,
                     onCancel = onCancel,
@@ -92,15 +93,17 @@ private fun OnboardingContent(
 
 @Composable
 private fun Hero(modifier: Modifier = Modifier) {
-    Box(
-        modifier = modifier.background(MaterialTheme.colorScheme.surfaceVariant),
-        contentAlignment = Alignment.Center,
+    Column(
+        modifier = modifier.background(MaterialTheme.colorScheme.surface),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
     ) {
-        Icon(
-            Icons.Default.CloudDownload,
-            contentDescription = null,
-            modifier = Modifier.size(56.dp),
-            tint = MaterialTheme.colorScheme.primary,
+        SnapFindMark(state = SnapFindMarkState.Active)
+        Spacer(modifier = Modifier.height(SnapFindSpacing.sm))
+        Text(
+            "One-time setup",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }
@@ -134,6 +137,7 @@ private fun SheetState(
 @Composable
 private fun Sheet(
     modifier: Modifier = Modifier,
+    minHeight: Dp,
     uiState: OnboardingUiState,
     onStart: () -> Unit,
     onCancel: () -> Unit,
@@ -143,31 +147,16 @@ private fun Sheet(
     Column(
         modifier = modifier
             .fillMaxWidth()
+            .heightIn(min = minHeight)
+            .shadow(elevation = SnapFindDimens.elevation, shape = sheetShape, clip = false)
+            .border(1.5.dp, MaterialTheme.colorScheme.outline, sheetShape)
             .clip(sheetShape)
             .background(MaterialTheme.colorScheme.surface)
-            // Belt and braces for the one case the Box below can't cover: if
-            // a state's own content changes height while it is showing, this
-            // glides instead of jumping.
             .animateContentSize()
             .padding(horizontal = SnapFindSpacing.xl, vertical = SnapFindSpacing.xl),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        // Every state is measured, one is placed. The sheet is therefore
-        // exactly as tall as its tallest state and never moves as the text
-        // under it changes -- a height that is *derived* rather than
-        // declared, so it survives translation, a longer error message and
-        // the user's font-scale setting without a number to keep in sync.
-        //
-        // The alternative, a fixed dp, is a guess that is wrong on the first
-        // phone that disagrees with it. Hiding the inactive states with
-        // alpha would size the box correctly too, but an invisible button
-        // still takes taps and still reads aloud to TalkBack; a child that
-        // is measured and not placed is neither drawn nor hit-testable.
-        // Centred, not top-aligned. The sheet is as tall as its tallest
-        // state, so a shorter one leaves room somewhere -- pinned to the top
-        // that room all fell under the button, which then floated with a gap
-        // beneath it instead of sitting in the sheet.
-        Box(contentAlignment = Alignment.Center) {
+        Box(modifier = Modifier.fillMaxHeight(), contentAlignment = Alignment.Center) {
             SheetState(uiState, visible = uiState is OnboardingUiState.ReadyToStart) {
                 ReadyToStartContent(onStart = onStart)
             }
@@ -205,20 +194,28 @@ private fun ReadyToStartContent(onStart: () -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text(
-            text = "Welcome to SnapFind AI",
+            text = "Your photos never leave this phone",
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold,
             textAlign = TextAlign.Center
         )
         Text(
-            "SnapFind matches faces entirely on your device. This needs an internet connection now after that, it works fully offline.",
+            "SnapFind matches faces entirely on your device. " +
+                "To do that it needs to download its matching models once, about 16 MB. " +
+                "After that it works fully offline.",
             style = MaterialTheme.typography.bodyMedium,
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(top = SnapFindSpacing.sm),
         )
         SnapFindButtonSlot(modifier = Modifier.padding(top = SnapFindSpacing.lg)) {
-            SnapFindButton(text = "Get Started", onClick = onStart)
+            SnapFindButton(text = "Download models · 16 MB", onClick = onStart)
         }
+        Text(
+            "Takes about a minute on Wi-Fi",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = SnapFindSpacing.xs),
+        )
     }
 }
 
@@ -273,20 +270,25 @@ private fun DownloadingContent(
             label = percent,
             modifier = Modifier.padding(vertical = SnapFindSpacing.sm),
         )
-        SnapFindButtonSlot(modifier = Modifier.padding(top = SnapFindSpacing.md)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = SnapFindSpacing.md),
+            horizontalArrangement = Arrangement.spacedBy(SnapFindSpacing.sm),
+        ) {
+            SnapFindButton(
+                text = if (paused) "Resume" else "Pause",
+                onClick = onResume ?: onPause ?: {},
+                variant = SnapFindButtonVariant.Tonal,
+                modifier = Modifier.weight(1f),
+            )
             SnapFindButton(
                 text = "Cancel",
                 onClick = onCancel,
-                variant = SnapFindButtonVariant.Tonal
+                variant = SnapFindButtonVariant.Tonal,
+                modifier = Modifier.weight(1f),
             )
         }
-        TransferToggleButton(
-            paused = paused,
-            onClick = onResume ?: onPause ?: {},
-            modifier = Modifier
-                .padding(top = SnapFindSpacing.md)
-                .align(Alignment.End),
-        )
     }
 }
 
@@ -310,26 +312,6 @@ private fun ErrorContent(message: String, onRetry: () -> Unit) {
         SnapFindButtonSlot(modifier = Modifier.padding(top = SnapFindSpacing.lg)) {
             SnapFindButton(text = "Retry", onClick = onRetry)
         }
-    }
-}
-
-/**
- * Pause while the download runs, resume while it's stopped -- one control in
- * one place, rather than two buttons swapping which is hidden.
- */
-@Composable
-private fun TransferToggleButton(paused: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    FloatingActionButton(
-        onClick = onClick,
-        modifier = modifier,
-        containerColor = MaterialTheme.colorScheme.surfaceVariant,
-        contentColor = MaterialTheme.colorScheme.onSurface,
-        elevation = FloatingActionButtonDefaults.elevation(SnapFindDimens.elevation),
-    ) {
-        Icon(
-            if (paused) Icons.Default.PlayArrow else Icons.Default.Pause,
-            contentDescription = if (paused) "Resume download" else "Pause download",
-        )
     }
 }
 

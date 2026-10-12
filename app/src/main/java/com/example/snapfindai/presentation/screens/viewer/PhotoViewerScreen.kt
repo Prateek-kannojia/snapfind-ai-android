@@ -337,7 +337,7 @@ private fun ViewerActions(
                     current.savedAt != null -> "Saved to gallery, tap to save again"
                     else -> "Save to gallery"
                 },
-                tint = MaterialTheme.colorScheme.primary,
+                tint = MaterialTheme.colorScheme.onPrimaryContainer,
                 modifier = Modifier.size(SnapFindDimens.toolbarIcon),
             )
         }
@@ -353,7 +353,7 @@ private fun ViewerActions(
             Icon(
                 Icons.Default.Delete,
                 contentDescription = "Remove from matches",
-                tint = MaterialTheme.colorScheme.primary,
+                tint = MaterialTheme.colorScheme.onPrimaryContainer,
                 modifier = Modifier.size(SnapFindDimens.toolbarIcon),
             )
         }

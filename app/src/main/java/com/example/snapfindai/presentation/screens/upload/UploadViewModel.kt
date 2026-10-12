@@ -2,6 +2,7 @@ package com.example.snapfindai.presentation.screens.upload
 
 import android.content.Context
 import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.work.ExistingWorkPolicy
@@ -17,18 +18,22 @@ import com.example.snapfindai.domain.usecase.SaveMatchedPhotosUseCase
 import com.example.snapfindai.utils.FileHelper
 import com.example.snapfindai.work.MatchPhotosWorker
 import dagger.hilt.android.lifecycle.HiltViewModel
+import java.io.File
+import java.util.UUID
+import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
-import java.util.UUID
-import javax.inject.Inject
 
 /**
  * Starts matching jobs and reflects their state. It no longer *runs* them:
@@ -70,9 +75,40 @@ class UploadViewModel @Inject constructor(
     private val _zipUri = MutableStateFlow<Uri?>(null)
     val zipUri: StateFlow<Uri?> = _zipUri.asStateFlow()
 
+    private val _zipFileName = MutableStateFlow<String?>(null)
+    val zipFileName: StateFlow<String?> = _zipFileName.asStateFlow()
+
+    private val _zipFileSizeBytes = MutableStateFlow<Long?>(null)
+    val zipFileSizeBytes: StateFlow<Long?> = _zipFileSizeBytes.asStateFlow()
+
     fun onSelfiePicked(uri: Uri?) { _selfieUri.value = uri }
 
-    fun onZipPicked(uri: Uri?) { _zipUri.value = uri }
+    fun onZipPicked(context: Context, uri: Uri?) {
+        _zipUri.value = uri
+        _zipFileName.value = null
+        _zipFileSizeBytes.value = null
+        if (uri == null) return
+        viewModelScope.launch {
+            val (name, size) = withContext(Dispatchers.IO) { queryZipInfo(context, uri) }
+            _zipFileName.value = name
+            _zipFileSizeBytes.value = size
+        }
+    }
+
+    private fun queryZipInfo(context: Context, uri: Uri): Pair<String?, Long?> {
+        return context.contentResolver.query(
+            uri,
+            arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
+            null, null, null,
+        )?.use { cursor ->
+            if (!cursor.moveToFirst()) return@use null to null
+            val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
+            val name = nameIdx.takeIf { it >= 0 }?.let { cursor.getString(it) }
+            val size = sizeIdx.takeIf { it >= 0 && !cursor.isNull(it) }?.let { cursor.getLong(it) }
+            name to size
+        } ?: (null to null)
+    }
 
     // One-shot: navigating off of `uiState == Success` breaks the moment
     // Results is left via the system back gesture instead of its in-app back
@@ -80,12 +116,28 @@ class UploadViewModel @Inject constructor(
     // handler, never touching resetState(), so uiState is still Success when
     // Upload reappears and immediately re-navigates forward. A one-shot event
     // fires exactly once and is never re-derived from state afterward.
-    private val _navigateToResults = MutableSharedFlow<Unit>()
-    val navigateToResults: SharedFlow<Unit> = _navigateToResults.asSharedFlow()
+    // A Channel, because this one has to arrive. On a bare SharedFlow
+     // `emit` suspends until something is collecting, so a job finishing
+     // while the user was on another screen parked that coroutine for as
+     // long as they stayed away. A buffered channel takes the event
+     // immediately and hands it over when the screen is next shown -- the
+     // user started this job, and being taken to its results on their return
+     // is the point of the event.
+    private val _navigateToResults = Channel<Unit>(Channel.BUFFERED)
+    val navigateToResults: Flow<Unit> = _navigateToResults.receiveAsFlow()
 
     // One-shot, like navigateToResults: a snackbar and a notification must
     // fire once per batch, not again every time the screen recomposes.
-    private val _events = MutableSharedFlow<UploadEvent>()
+    // The opposite choice, for the opposite kind of event. These say what a
+     // batch did, and a message is only true at the moment it is produced --
+     // replaying "17 saved" at whoever happens to compose next, minutes
+     // later, is worse than saying nothing. DROP_OLDEST with a buffer of one
+     // means emit never suspends and nothing is kept for a listener who
+     // wasn't there.
+    private val _events = MutableSharedFlow<UploadEvent>(
+        extraBufferCapacity = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
     val events: SharedFlow<UploadEvent> = _events.asSharedFlow()
 
     /**
@@ -128,14 +180,19 @@ class UploadViewModel @Inject constructor(
                             _uiState.value = UploadUiState.Error("No matches found. Try a clearer selfie.")
                         } else {
                             _uiState.value = UploadUiState.Success
-                            _navigateToResults.emit(Unit)
+                            _navigateToResults.send(Unit)
                         }
                     }
 
-                    // Picks are deliberately kept on failure: the user most
-                    // likely wants to swap one of them, and clearing both
-                    // would make them start over to change one.
+                    // The selfie goes, the archive stays. Clearing both
+                    // would make the user re-pick a 500MB file to change the
+                    // one thing the error is usually about; clearing neither
+                    // left both buttons reading "Selected" under a message
+                    // telling them to choose a different selfie, with no sign
+                    // of which file to change. Dropping just the selfie says
+                    // in the UI what the message says in words.
                     WorkInfo.State.FAILED -> onceFor(info.id) {
+                        clearPickedSelfie()
                         _uiState.value = UploadUiState.Error(
                             info.outputData.getString(MatchPhotosWorker.KEY_ERROR)
                                 ?: "An unknown error occurred."
@@ -223,9 +280,16 @@ class UploadViewModel @Inject constructor(
         workManager.cancelUniqueWork(MatchPhotosWorker.WORK_NAME)
     }
 
+    /** Just the selfie -- see the FAILED branch for why the archive is left alone. */
+    private fun clearPickedSelfie() {
+        _selfieUri.value = null
+    }
+
     private fun clearPickedFiles() {
         _selfieUri.value = null
         _zipUri.value = null
+        _zipFileName.value = null
+        _zipFileSizeBytes.value = null
     }
 
     fun resetState() {

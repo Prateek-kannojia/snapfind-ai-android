@@ -149,6 +149,55 @@ The confirmation states the whole trade, including the part that matters most: *
 
 **The design system.** `ui/theme/` now carries the constants the screens were otherwise hardcoding: `SnapFindSpacing` for layout rhythm, `SnapFindDimens` for the few dimensions it's legitimate to fix (touch-target floors, badge sizes, upper bounds), `ClayShapes`/`ClayPillShape` for corner treatment, plus a night palette and the bundled font family. The rule being enforced is that a dp literal in a screen is a smell — either it's a visual primitive and belongs in `SnapFindDimens`, or it's layout and should come from constraints.
 
+### The colour pass — status: light theme now meets WCAG AA, all Material roles mapped
+
+A design review of the shipped build measured the palette against WCAG 2.1, sampling rendered pixels from device captures as well as computing from the hex values. The token architecture held up; the light palette's *values* did not, and the scheme was mapping only 11 of Material 3's ~29 colour roles.
+
+**Two structural rules now written into `Color.kt`, because both had been violated in ways that were invisible until measured.**
+
+*A fill colour and a text colour cannot be the same hex in a light theme.* `ClayAccent` (`#E8785A`) is the look-book coral and a fine button fill. As ink it measures **2.34:1** on the clay ground — and it was being used as the content colour for the outlined button's label, the app bar's `Download N` action, and the delete icon. The palette now carries both halves: `ClayAccent` is a fill, `ClayAccentInk` (`#B04423`, **4.60:1**) is the ink, and they are documented as non-interchangeable.
+
+*The same split applies to what sits on the fill.* `onPrimary` was a near-white at **2.71:1** on the coral — failing not just the 4.5:1 body-text bar but the 3:1 large-text one, on `Get Started`, `Find My Photos` and `Retry`. Measured on a real device capture it came out at 2.85:1. The fix was already present in the codebase: **the dark theme had solved this correctly**, pairing its coral with a deep cocoa at 7.25:1. Light now does the same (`#2B1C14`, **5.68:1**) and the identity hex is untouched.
+
+**Unmapped roles do not degrade gracefully — they fall back to Material's baseline, which is lavender.** This was not theoretical. `AlertDialog` paints `surfaceContainerHigh`; with that role unmapped, the delete-job confirmation was rendering as a `#ECE6F0` lavender panel inside a clay app. `Card` paints `surfaceContainerLow` (`#F7F2FA`), `Snackbar` uses `inverseSurface`. The scheme now maps every role: the full `surfaceContainer*` ladder (dim → bright) derived from the existing surface, both container pairs for each accent, `outlineVariant`, `scrim`, and the inverse trio.
+
+**`surfaceTint` is pinned to the surface colour, deliberately.** Material blends `surfaceTint` into a raised surface in proportion to its tonal elevation, and the default tint is `primary` — which would push a faint coral into every elevated `Card`. Soft Clay separates surfaces with shadow, not a tinted overlay, so the blend is made a no-op rather than left to tint the clay.
+
+**Other values corrected, each with its measured ratio in the source:** `onSurfaceVariant` `#847F72` → `#686358` (3.24:1 → **4.84:1**; it carries the step labels, file sizes and most body copy, and now clears AA on all three light grounds rather than none); a real `secondaryContainer` `#D0C9BA` for tonal buttons and the progress track, which were painting `surfaceVariant` at **1.07:1** against the page and were visible only by their drop shadow; `outline` `#D8D3C7` → `#AFA796` with the old value demoted to `outlineVariant`; `tertiary` → `#5E8068`. Dark needed only its two inherited gaps closed (`outline`, `secondaryContainer`) — every other dark pairing already passed.
+
+**One caveat recorded rather than fixed here:** `tertiary` — the sage meant to distinguish *"this succeeded"* from *"tap this"* — is **defined but referenced nowhere outside the theme**. `SnapFindStatusBadge` tints with `primary`, so a saved tick and a selected tick are currently the identical coral mark, which is the exact confusion the sage exists to prevent. Wiring it up is a change to the components, not the palette, and is tracked separately.
+
+Both schemes are verified by computation: every `on*`/container pairing is checked against 4.5:1 for text and 3:1 for icons, and the ratios are written next to each value in `Color.kt` so a later "slightly nicer" hex can't silently drop the app below AA.
+
+### Components onto the tokens — status: done, every control verified
+
+Defining the palette fixed nothing on its own; the components were still asking for the old roles. This pass pointed them at the new ones.
+
+**The tonal button was invisible.** It painted `surfaceVariant`, which sits **1.07:1** from the page — for practical purposes the same colour — so `Choose Selfie` and every `Cancel` in the app were defined entirely by a 3dp drop shadow. They now paint `secondaryContainer`, the role that exists to be "quiet but still interactive" (1.34:1 from the page, label at 8.56:1).
+
+**The outlined button's border is the only thing identifying it**, which WCAG 1.4.11 puts at 3:1. It was drawn in raw `primary` — **2.34:1** as a line on clay. `outline` would be worse, since that role is deliberately pitched for dividers. Both the border and the label now use `onPrimaryContainer` (**4.60:1**), so the edge and the word are one colour instead of two different near-misses.
+
+**The progress ring was drawing half of itself.** `trackColor` was `surfaceVariant` — the same 1.07:1 — so the unfilled arc never rendered and a determinate ring read as a coral fragment rather than a fraction. Track is now `secondaryContainer`, applied to the circular ring and its linear sibling under the Results app bar.
+
+**Disabled buttons were the ugliest thing in the app.** With no disabled colours supplied, Material composites `onSurface` at 12%/38%, which over warm putty resolves to a cold grey the palette doesn't contain — measured on-device at **1.56:1**, label against its own container. All three variants now state disabled colours explicitly in the clay family (`surfaceContainerHighest` / `onSurfaceVariant`, **4.33:1** light, 4.53:1 dark). That light figure is just under AA *on purpose*: WCAG 1.4.3 exempts inactive components, because a disabled control that reads as strongly as an enabled one has stopped saying it is disabled.
+
+**The saved tick and the selection tick were the same coral mark.** `SnapFindStatusBadge` tinted with `primary`, so "this is in your gallery" and "you have picked this" were indistinguishable — the exact confusion `tertiary` was introduced to prevent, and which Color.kt's comment already claimed was solved. Sage is now wired up, and the component was restructured in two ways:
+
+- **A filled disc, not a bare tinted glyph.** The badge lands on an arbitrary photograph, and no single tint reads on every photo. The disc gives the glyph a known background, so the only contrast that must hold is one the palette controls. Its edge is a shadow, not a stroke.
+- **Colours come in pairs, not as a single `tint`.** Each state names both its container and its content, so the saved and selection badges can no longer collapse into each other.
+
+**Saved also changed glyph, not just hue.** Sage and coral are far apart in hue but close in luminance — in dark mode **1.03:1** against each other, which is precisely the pairing red-green colour blindness collapses. The two badges never co-occur (selection replaces the status badges entirely), so hue alone was survivable, but `DownloadDone` is both unmistakable and more honest: not "correct", but "this came down into your gallery".
+
+**Selection stopped relying on fill alone.** Selected was a coral filled circle and unselected a coral *ring* — same hue, same size, same position. Selected is now a coral disc with a dark tick (5.68:1); unselected is a plain white disc. White is deliberately not a theme role: it has to mean *neither* "act" (coral) nor "done" (sage), and it sits on a photograph, which has no theme.
+
+**A selected tile is pressed into the page.** Judging which of twelve tiles are selected from a 28dp corner mark is slow, and the obvious fix — a coloured border — is the one thing this theme cannot have, since `Shape.kt`'s whole premise is that almost nothing on screen has a sharp corner. A hard rectangle over a photo reads as damage. Instead the tile scales to `SnapFindDimens.selectedTileScale` (0.93) and drops its elevation to zero, with a short gradient inside the top edge so the near edge falls into shadow. On a surface that looks extruded from clay, that reads as a thumb pressing a shape back into the slab — legible across a whole grid, no new colour, no edge. `graphicsLayer` rather than `Modifier.scale`, so the shadow scales with the card instead of being drawn full-size behind a shrunken one.
+
+**`ui/theme/Motion.kt`** is new, and holds one spring. Clay Wave is a material identity, so its motion should have give rather than easing on a curve; expressing that once means a second animated control can't arrive with its own bounce. Deliberately one spec and not a scale of them — there is exactly one kind of movement in the app so far, and tokens invented ahead of their need are what `SnapFindDimens` exists to argue against.
+
+**Smaller, same pass:** the Results `Scaffold` now states `containerColor = background` like the other two screens (it was defaulting to `surface`, a different colour from its own app bar, which `SnapFindTopAppBar` paints `background` specifically so the bar disappears into the screen). The snackbar's dismiss action and the photo viewer's floating-toolbar icons moved off raw `primary` — the viewer's two icons sit on a clay pill floating over a black screen at **2.45:1**, the worst-placed instance of the fill-as-ink mistake in the app.
+
+**One deliberate exception.** The onboarding hero's cloud icon still tints `primary` (2.19:1 on `surfaceVariant`). It carries `contentDescription = null` — it is decorative, which WCAG exempts — and the whole hero is replaced in the onboarding pass, so recolouring it now would be churn on a component scheduled for deletion.
+
 `presentation/components/` holds one definition each for the things every screen had been drawing its own version of:
 
 - **`SnapFindButton`** — every pill button, with content-driven sizing: `heightIn(min = …)` respects the accessibility floor without forcing every button to exactly that height, `widthIn(max = …)` stops a full-width button stretching edge-to-edge on a tablet while still following its container on a phone.

@@ -51,13 +51,13 @@ fun SnapFindSnackbarHost(hostState: SnackbarHostState, modifier: Modifier = Modi
             // The dismiss slot, not the action slot: Material lays the two
             // out differently, and an X in the action slot is treated as the
             // bar's primary verb -- which it is the opposite of.
-            dismissActionContentColor = MaterialTheme.colorScheme.primary,
+            dismissActionContentColor = MaterialTheme.colorScheme.onPrimaryContainer,
             dismissAction = {
                 IconButton(onClick = { data.dismiss() }) {
                     Icon(
                         Icons.Default.Close,
                         contentDescription = "Dismiss",
-                        tint = MaterialTheme.colorScheme.primary,
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
                     )
                 }
             },

@@ -17,6 +17,7 @@ sealed interface ResultsUiState {
     data class Loaded(
         val jobId: Long,
         val matches: List<MatchItemState>,
+        val scannedCount: Int = 0,
         val selectedPhotos: Set<File> = emptySet(),
         /** Non-null while a batch (download-all / download-selected) save is running. */
         val batchProgress: BatchProgress? = null,
@@ -43,6 +44,7 @@ sealed interface ResultsUiState {
          * how many photos will newly land in their gallery.
          */
         val notSavedCount: Int get() = matches.count { it.saveStatus != SaveStatus.Saved }
+        val savedCount: Int get() = matches.size - notSavedCount
     }
 }
 
