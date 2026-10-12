@@ -14,6 +14,9 @@ import com.example.snapfindai.domain.model.SavedJob
 import com.example.snapfindai.domain.repository.JobHistoryRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.security.MessageDigest
@@ -162,19 +165,45 @@ class JobHistoryRepositoryImpl @Inject constructor(
     // runs where the emptying actually occurs, in removeMatches below.
     override suspend fun getAllJobSummaries(): List<JobSummary> = withContext(Dispatchers.IO) {
         jobDao.getAllJobs(JobStatus.Complete.name).map { job ->
-            val photos = jobDao.getMatchedPhotosForJob(job.id)
-            val files = photos.map { File(it.photoPath) }
-            JobSummary(
-                id = job.id,
-                timestamp = job.timestamp,
-                matchCount = photos.size,
-                previewPhoto = files.firstOrNull(),
-                // One stat per file, on top of a query this already does, so
-                // the size costs nothing extra worth avoiding.
-                sizeBytes = files.sumOf { it.length() },
-            )
+            summaryOf(job, jobDao.getMatchedPhotosForJob(job.id).map { File(it.photoPath) })
         }
     }
+
+    override fun observeJobSummaries(): Flow<List<JobSummary>> = combine(
+        jobDao.observeJobs(JobStatus.Complete.name),
+        jobDao.observeMatchedPhotos(),
+    ) { jobs, photos ->
+        // Grouped once here rather than queried per job: see
+        // JobDao.observeMatchedPhotos for why a stream can't afford the N+1
+        // the one-shot read above is fine with.
+        val photosByJob = photos.groupBy { it.jobId }
+        jobs.map { job ->
+            summaryOf(job, photosByJob[job.id].orEmpty().map { File(it.photoPath) })
+        }
+    }
+        // Every emission stats one file per match, which is disk I/O -- so it
+        // belongs off whichever dispatcher the collector happens to be on,
+        // which for a ViewModel is the main thread.
+        .flowOn(Dispatchers.IO)
+
+    /**
+     * Shared by the one-shot read and the stream, so the two can't drift into
+     * describing the same job differently.
+     *
+     * [files] must arrive in the order the job found its matches -- both
+     * callers guarantee that, one via `ORDER BY id` per job and the other via
+     * `ORDER BY id` across all of them plus a grouping that preserves it --
+     * because the first of them is the card's preview photo.
+     */
+    private fun summaryOf(job: JobEntity, files: List<File>) = JobSummary(
+        id = job.id,
+        timestamp = job.timestamp,
+        matchCount = files.size,
+        previewPhoto = files.firstOrNull(),
+        // One stat per file, on top of a query this already does, so the size
+        // costs nothing extra worth avoiding.
+        sizeBytes = files.sumOf { it.length() },
+    )
 
     override suspend fun markSavedToGallery(photo: File, savedAt: Long) {
         jobDao.markSaved(photo.absolutePath, savedAt)

@@ -17,6 +17,7 @@ import com.example.snapfindai.domain.model.JobSummary
 import com.example.snapfindai.domain.model.SavedJob
 import com.example.snapfindai.domain.repository.JobHistoryRepository
 import com.example.snapfindai.utils.FileHelper
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -185,6 +186,7 @@ class AbandonedJobSweeperTest {
         override suspend fun getLastJob(): SavedJob? = unused()
         override suspend fun getJob(jobId: Long): SavedJob? = unused()
         override suspend fun getAllJobSummaries(): List<JobSummary> = unused()
+        override fun observeJobSummaries(): Flow<List<JobSummary>> = unused()
         override suspend fun markSavedToGallery(photo: File, savedAt: Long) = unused()
         override suspend fun clearSavedToGallery(photos: List<File>) = unused()
         override suspend fun removeMatches(photos: List<File>) = unused()

@@ -15,7 +15,15 @@ sealed interface ResultsUiState {
      */
     data class Error(val message: String) : ResultsUiState
     data class Loaded(
-        val jobId: Long,
+        /**
+         * Null when there is no job to show -- a fresh install, or history
+         * emptied while this screen was open. It was `-1L` in that case: a
+         * sentinel standing for "absent" in a type that can't say so, which
+         * only went unnoticed because its single consumer (opening the
+         * viewer) sits behind a non-empty match list and so never saw it.
+         * Nullable states the same fact in a form the compiler checks.
+         */
+        val jobId: Long?,
         val matches: List<MatchItemState>,
         val scannedCount: Int = 0,
         val selectedPhotos: Set<File> = emptySet(),

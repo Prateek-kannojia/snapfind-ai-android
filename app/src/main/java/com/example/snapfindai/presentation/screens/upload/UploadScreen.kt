@@ -37,11 +37,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Devices
 import androidx.compose.ui.tooling.preview.Preview
-import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.example.snapfindai.domain.model.JobSummary
 import com.example.snapfindai.presentation.components.SnapFindButton
@@ -70,14 +70,13 @@ fun UploadScreen(
     onOpenJob: (Long) -> Unit,
     viewModel: UploadViewModel = hiltViewModel()
 ) {
-    val uiState by viewModel.uiState.collectAsState()
-    val jobHistory by viewModel.jobHistory.collectAsState()
+    // One state, lifecycle-aware. This was eight separate collectAsState
+    // calls, which is eight recomposition triggers for one screen and -- the
+    // part that actually showed -- eight independently-timed values that
+    // could render a combination the ViewModel never held. See
+    // UploadScreenState.
+    val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
-
-    val selfieUri by viewModel.selfieUri.collectAsState()
-    val zipUri by viewModel.zipUri.collectAsState()
-    val zipFileName by viewModel.zipFileName.collectAsState()
-    val zipFileSizeBytes by viewModel.zipFileSizeBytes.collectAsState()
 
     val selfieLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -91,8 +90,6 @@ fun UploadScreen(
         viewModel.navigateToResults.collect { onNavigateToResults() }
     }
 
-    val selectedJobs by viewModel.selectedJobs.collectAsState()
-    val operationInFlight by viewModel.operationInFlight.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val saveToGallery = rememberGallerySaveGate(snackbarHostState)
 
@@ -141,14 +138,7 @@ fun UploadScreen(
     }
 
     UploadContent(
-        uiState = uiState,
-        jobHistory = jobHistory,
-        selfieUri = selfieUri,
-        hasZip = zipUri != null,
-        zipFileName = zipFileName,
-        zipFileSizeBytes = zipFileSizeBytes,
-        selectedJobs = selectedJobs,
-        operationInFlight = operationInFlight,
+        state = state,
         snackbarHostState = snackbarHostState,
         onChooseSelfie = { selfieLauncher.launch("image/*") },
         onChooseZip = { zipLauncher.launch("application/zip") },
@@ -165,14 +155,7 @@ fun UploadScreen(
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun UploadContent(
-    uiState: UploadUiState,
-    jobHistory: List<JobSummary>,
-    selfieUri: Uri?,
-    hasZip: Boolean,
-    zipFileName: String?,
-    zipFileSizeBytes: Long?,
-    selectedJobs: Set<Long> = emptySet(),
-    operationInFlight: Boolean = false,
+    state: UploadScreenState,
     snackbarHostState: SnackbarHostState = remember { SnackbarHostState() },
     onChooseSelfie: () -> Unit,
     onChooseZip: () -> Unit,
@@ -185,9 +168,12 @@ private fun UploadContent(
     onClearSelection: () -> Unit = {},
 ) {
     var confirmingDelete by rememberSaveable { mutableStateOf(false) }
-    val selectionMode = selectedJobs.isNotEmpty()
-    val hasSelfie = selfieUri != null
-    val armed = hasSelfie && hasZip
+    // Read off the state rather than recomputed here: both are derived
+    // properties on UploadScreenState, so the screen and the ViewModel can't
+    // come to different conclusions about whether a selection is active or
+    // the form is ready to submit.
+    val selectionMode = state.selectionMode
+    val armed = state.armed
 
     BackHandler(enabled = selectionMode) { onClearSelection() }
 
@@ -197,15 +183,15 @@ private fun UploadContent(
         topBar = {
             UploadHeader(
                 selectionMode = selectionMode,
-                selectedCount = selectedJobs.size,
-                operationInFlight = operationInFlight,
+                selectedCount = state.selectedJobs.size,
+                operationInFlight = state.operationInFlight,
                 onClearSelection = onClearSelection,
                 onDownloadSelected = onDownloadJobs,
                 onDeleteSelected = { confirmingDelete = true },
             )
         },
     ) { paddingValues ->
-        val processingState = uiState as? UploadUiState.Processing
+        val processingState = state.matching as? MatchingState.Processing
         if (processingState != null) {
             MatchingProgress(
                 modifier = Modifier.padding(paddingValues),
@@ -215,81 +201,88 @@ private fun UploadContent(
             return@Scaffold
         }
 
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .padding(horizontal = SnapFindSpacing.screenHorizontal),
-        ) {
-            AnimatedVisibility(
-                visible = !selectionMode,
-                enter = fadeIn() + expandVertically(),
-                exit = fadeOut() + shrinkVertically(),
+        Column(modifier = Modifier.fillMaxSize().padding(paddingValues)) {
+            // Outside the horizontal inset the rest of the screen sits in, so
+            // the bar runs edge to edge directly under the app bar -- the same
+            // placement Results gives its own batch. A progress bar that stops
+            // short of the screen edges reads as one component's business
+            // rather than as the screen's current state.
+            state.batchProgress?.let { BatchProgressBar(progress = it) }
+
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(horizontal = SnapFindSpacing.screenHorizontal),
             ) {
-                Column {
-                    Spacer(modifier = Modifier.height(SnapFindSpacing.lg))
-                    UploadForm(
-                        hasSelfie = hasSelfie,
-                        selfieUri = selfieUri,
-                        hasZip = hasZip,
-                        zipFileName = zipFileName,
-                        zipFileSizeBytes = zipFileSizeBytes,
-                        onChooseSelfie = onChooseSelfie,
-                        onChooseZip = onChooseZip,
-                    )
-
-                    if (uiState is UploadUiState.Error) {
+                AnimatedVisibility(
+                    visible = !selectionMode,
+                    enter = fadeIn() + expandVertically(),
+                    exit = fadeOut() + shrinkVertically(),
+                ) {
+                    Column {
                         Spacer(modifier = Modifier.height(SnapFindSpacing.lg))
-                        Text(uiState.message, color = MaterialTheme.colorScheme.error)
-                    }
+                        UploadForm(
+                            selfieUri = state.selfieUri,
+                            archive = state.archive,
+                            onChooseSelfie = onChooseSelfie,
+                            onChooseZip = onChooseZip,
+                        )
 
-                    AnimatedVisibility(
-                        visible = armed,
-                        enter = fadeIn() + expandVertically(),
-                        exit = fadeOut() + shrinkVertically(),
-                    ) {
-                        Column {
+                        val error = state.matching as? MatchingState.Error
+                        if (error != null) {
                             Spacer(modifier = Modifier.height(SnapFindSpacing.lg))
-                            SnapFindButton(text = "Find My Photos", onClick = onSubmit)
-                            Spacer(modifier = Modifier.height(SnapFindSpacing.sm))
-                            SnapFindButtonSlot { PrivacyChip() }
+                            Text(error.message, color = MaterialTheme.colorScheme.error)
+                        }
+
+                        AnimatedVisibility(
+                            visible = armed,
+                            enter = fadeIn() + expandVertically(),
+                            exit = fadeOut() + shrinkVertically(),
+                        ) {
+                            Column {
+                                Spacer(modifier = Modifier.height(SnapFindSpacing.lg))
+                                SnapFindButton(text = "Find My Photos", onClick = onSubmit)
+                                Spacer(modifier = Modifier.height(SnapFindSpacing.sm))
+                                SnapFindButtonSlot { PrivacyChip() }
+                            }
                         }
                     }
                 }
-            }
 
-            if (jobHistory.isNotEmpty()) {
-                RecentJobsHeader(totalBytes = jobHistory.sumOf { it.sizeBytes })
-            }
+                if (state.history.isNotEmpty()) {
+                    RecentJobsHeader(totalBytes = state.history.sumOf { it.sizeBytes })
+                }
 
-            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                if (jobHistory.isEmpty()) {
-                    EmptyUploadState(modifier = Modifier.fillMaxSize(), showChip = !armed)
-                } else {
-                    LazyVerticalGrid(
-                        columns = GridCells.Fixed(2),
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(top = SnapFindSpacing.sm, bottom = SnapFindSpacing.lg),
-                        horizontalArrangement = Arrangement.spacedBy(SnapFindSpacing.grid),
-                        verticalArrangement = Arrangement.spacedBy(SnapFindSpacing.grid),
-                    ) {
-                        items(jobHistory, key = { it.id }) { job ->
-                            JobHistoryCard(
-                                job = job,
-                                selectionMode = selectionMode,
-                                isSelected = job.id in selectedJobs,
-                                // The same reason the results grid does this:
-                                // the app bar's actions are already disabled
-                                // while a batch runs, and leaving the tiles
-                                // live let a tap open a job that was being
-                                // deleted, or change a selection that the
-                                // batch's own cleanup then discarded.
-                                enabled = !operationInFlight,
-                                onClick = {
-                                    if (selectionMode) onToggleJobSelected(job.id) else onOpenJob(job.id)
-                                },
-                                onLongClick = { onToggleJobSelected(job.id) },
-                            )
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    if (state.history.isEmpty()) {
+                        EmptyUploadState(modifier = Modifier.fillMaxSize(), showChip = !armed)
+                    } else {
+                        LazyVerticalGrid(
+                            columns = GridCells.Fixed(2),
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(top = SnapFindSpacing.sm, bottom = SnapFindSpacing.lg),
+                            horizontalArrangement = Arrangement.spacedBy(SnapFindSpacing.grid),
+                            verticalArrangement = Arrangement.spacedBy(SnapFindSpacing.grid),
+                        ) {
+                            items(state.history, key = { it.id }) { job ->
+                                JobHistoryCard(
+                                    job = job,
+                                    selectionMode = selectionMode,
+                                    isSelected = job.id in state.selectedJobs,
+                                    // The same reason the results grid does this:
+                                    // the app bar's actions are already disabled
+                                    // while a batch runs, and leaving the tiles
+                                    // live let a tap open a job that was being
+                                    // deleted, or change a selection that the
+                                    // batch's own cleanup then discarded.
+                                    enabled = !state.operationInFlight,
+                                    onClick = {
+                                        if (selectionMode) onToggleJobSelected(job.id) else onOpenJob(job.id)
+                                    },
+                                    onLongClick = { onToggleJobSelected(job.id) },
+                                )
+                            }
                         }
                     }
                 }
@@ -298,7 +291,7 @@ private fun UploadContent(
     }
 
     if (confirmingDelete) {
-        val selected = jobHistory.filter { it.id in selectedJobs }
+        val selected = state.history.filter { it.id in state.selectedJobs }
         DeleteJobsDialog(
             jobs = selected,
             onConfirm = {
@@ -408,14 +401,16 @@ private fun formatBytes(bytes: Long): String = when {
 
 @Composable
 private fun UploadForm(
-    hasSelfie: Boolean,
     selfieUri: Uri?,
-    hasZip: Boolean,
-    zipFileName: String?,
-    zipFileSizeBytes: Long?,
+    archive: PickedArchive?,
     onChooseSelfie: () -> Unit,
     onChooseZip: () -> Unit,
 ) {
+    val hasSelfie = selfieUri != null
+    // One nullable value answers all three questions the second row asks --
+    // whether an archive is picked, what it's called, and how big it is --
+    // instead of three fields that could describe different archives.
+    val hasZip = archive != null
     Column(verticalArrangement = Arrangement.spacedBy(SnapFindSpacing.sm)) {
         StepRow(
             done = hasSelfie,
@@ -439,9 +434,9 @@ private fun UploadForm(
         StepRow(
             done = hasZip,
             showBorder = !hasZip && hasSelfie,
-            title = if (hasZip) (zipFileName ?: "Zip file selected") else "Add the event photos",
+            title = if (hasZip) (archive?.name ?: "Zip file selected") else "Add the event photos",
             subtitle = if (hasZip) {
-                zipFileSizeBytes?.let(::formatBytes) ?: "Tap to change"
+                archive?.sizeBytes?.let(::formatBytes) ?: "Tap to change"
             } else {
                 "A .zip folder from the event"
             },
@@ -625,10 +620,77 @@ private fun RecentJobsHeader(totalBytes: Long) {
     }
 }
 
+/**
+ * What a batch over the selected jobs is doing.
+ *
+ * Downloading or deleting several jobs used to disable the app bar's actions
+ * and the grid and then say nothing for as long as the work took, which on a
+ * few hundred full-resolution photos is long enough to read as the app having
+ * stopped responding. The progress was already being computed for the
+ * download; nothing drew it, and deleting didn't compute any.
+ *
+ * Indeterminate until the counts exist -- for a download that is the window
+ * where every selected job's matches are being read out of the database. A
+ * determinate bar pinned at 0% would claim the work had started and stalled,
+ * which is the one thing it must not say.
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun BatchProgressBar(progress: JobBatchProgress) {
+    Column {
+        val fraction = progress.fraction
+        if (fraction != null) {
+            LinearWavyProgressIndicator(
+                progress = { fraction },
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.primary,
+                trackColor = MaterialTheme.colorScheme.secondaryContainer,
+            )
+        } else {
+            LinearWavyProgressIndicator(
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.primary,
+                trackColor = MaterialTheme.colorScheme.secondaryContainer,
+            )
+        }
+        Text(
+            progress.label(),
+            modifier = Modifier.padding(
+                horizontal = SnapFindSpacing.screenHorizontal,
+                vertical = SnapFindSpacing.xs,
+            ),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/**
+ * Names the unit, because the two batches don't share one: a download walks
+ * the photos inside every selected job, a delete walks the jobs. "3 of 12"
+ * alone would be wrong half the time.
+ */
+private fun JobBatchProgress.label(): String = when (action) {
+    JobBatchProgress.Action.Saving ->
+        if (completed != null && total != null) {
+            "Saving $completed of $total photo${if (total == 1) "" else "s"}..."
+        } else {
+            // The counts genuinely aren't known yet rather than being zero.
+            "Preparing to save..."
+        }
+
+    JobBatchProgress.Action.Deleting ->
+        if (total != null && total > 1) {
+            "Deleting ${completed ?: 0} of $total jobs..."
+        } else {
+            "Deleting..."
+        }
+}
+
 @Composable
 private fun MatchingProgress(
     modifier: Modifier = Modifier,
-    state: UploadUiState.Processing,
+    state: MatchingState.Processing,
     onCancel: () -> Unit,
 ) {
     Column(
@@ -738,6 +800,12 @@ private fun JobHistoryCard(
 
 // ---- Previews: Design > Split view in Android Studio, no build/install needed ----
 
+private val previewArchive = PickedArchive(
+    uri = Uri.parse("content://preview/goa-trip-2026.zip"),
+    name = "goa-trip-2026.zip",
+    sizeBytes = 412_000_000,
+)
+
 private val previewJobs = listOf(
     JobSummary(id = 1, timestamp = System.currentTimeMillis(), matchCount = 12, previewPhoto = File("preview.jpg"), sizeBytes = 31_457_280),
     JobSummary(id = 2, timestamp = System.currentTimeMillis() - 86_400_000, matchCount = 4, previewPhoto = null, sizeBytes = 10_485_760),
@@ -749,12 +817,9 @@ private val previewJobs = listOf(
 private fun UploadIdleEmptyPreview() {
     SnapFindAITheme {
         UploadContent(
-            uiState = UploadUiState.Idle,
-            jobHistory = emptyList(),
-            selfieUri = null,
-            hasZip = false,
-            zipFileName = null,
-            zipFileSizeBytes = null,
+            state = UploadScreenState(
+                matching = MatchingState.Idle,
+            ),
             onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
         )
     }
@@ -765,12 +830,10 @@ private fun UploadIdleEmptyPreview() {
 private fun UploadIdlePartialPreview() {
     SnapFindAITheme {
         UploadContent(
-            uiState = UploadUiState.Idle,
-            jobHistory = emptyList(),
-            selfieUri = Uri.parse("content://preview/selfie.jpg"),
-            hasZip = false,
-            zipFileName = null,
-            zipFileSizeBytes = null,
+            state = UploadScreenState(
+                matching = MatchingState.Idle,
+                selfieUri = Uri.parse("content://preview/selfie.jpg"),
+            ),
             onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
         )
     }
@@ -781,12 +844,12 @@ private fun UploadIdlePartialPreview() {
 private fun UploadIdleReadyPreview() {
     SnapFindAITheme {
         UploadContent(
-            uiState = UploadUiState.Idle,
-            jobHistory = previewJobs,
-            selfieUri = Uri.parse("content://preview/selfie.jpg"),
-            hasZip = true,
-            zipFileName = "goa-trip-2026.zip",
-            zipFileSizeBytes = 412_000_000,
+            state = UploadScreenState(
+                matching = MatchingState.Idle,
+                selfieUri = Uri.parse("content://preview/selfie.jpg"),
+                archive = previewArchive,
+                history = previewJobs,
+            ),
             onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
         )
     }
@@ -797,12 +860,11 @@ private fun UploadIdleReadyPreview() {
 private fun UploadErrorPreview() {
     SnapFindAITheme {
         UploadContent(
-            uiState = UploadUiState.Error("No matches found. Try a clearer selfie."),
-            jobHistory = previewJobs,
-            selfieUri = null,
-            hasZip = true,
-            zipFileName = "goa-trip-2026.zip",
-            zipFileSizeBytes = 412_000_000,
+            state = UploadScreenState(
+                matching = MatchingState.Error("No matches found. Try a clearer selfie."),
+                archive = previewArchive,
+                history = previewJobs,
+            ),
             onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
         )
     }
@@ -813,12 +875,11 @@ private fun UploadErrorPreview() {
 private fun UploadMatchingIndeterminatePreview() {
     SnapFindAITheme {
         UploadContent(
-            uiState = UploadUiState.Processing(),
-            jobHistory = emptyList(),
-            selfieUri = Uri.parse("content://preview/selfie.jpg"),
-            hasZip = true,
-            zipFileName = "goa-trip-2026.zip",
-            zipFileSizeBytes = 412_000_000,
+            state = UploadScreenState(
+                matching = MatchingState.Processing(),
+                selfieUri = Uri.parse("content://preview/selfie.jpg"),
+                archive = previewArchive,
+            ),
             onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
         )
     }
@@ -829,12 +890,11 @@ private fun UploadMatchingIndeterminatePreview() {
 private fun UploadMatchingProgressPreview() {
     SnapFindAITheme {
         UploadContent(
-            uiState = UploadUiState.Processing(scored = 18, total = 24),
-            jobHistory = emptyList(),
-            selfieUri = Uri.parse("content://preview/selfie.jpg"),
-            hasZip = true,
-            zipFileName = "goa-trip-2026.zip",
-            zipFileSizeBytes = 412_000_000,
+            state = UploadScreenState(
+                matching = MatchingState.Processing(scored = 18, total = 24),
+                selfieUri = Uri.parse("content://preview/selfie.jpg"),
+                archive = previewArchive,
+            ),
             onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
         )
     }
@@ -845,13 +905,64 @@ private fun UploadMatchingProgressPreview() {
 private fun UploadSelectionPreview() {
     SnapFindAITheme {
         UploadContent(
-            uiState = UploadUiState.Idle,
-            jobHistory = previewJobs,
-            selfieUri = null,
-            hasZip = false,
-            zipFileName = null,
-            zipFileSizeBytes = null,
-            selectedJobs = setOf(1L, 2L),
+            state = UploadScreenState(
+                matching = MatchingState.Idle,
+                history = previewJobs,
+                selectedJobs = setOf(1L, 2L),
+            ),
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
+        )
+    }
+}
+
+@Preview(name = "Batch - downloading", showBackground = true)
+@Composable
+private fun UploadDownloadingPreview() {
+    SnapFindAITheme {
+        UploadContent(
+            state = UploadScreenState(
+                matching = MatchingState.Idle,
+                history = previewJobs,
+                selectedJobs = setOf(1L, 2L),
+                operationInFlight = true,
+                batchProgress = JobBatchProgress(JobBatchProgress.Action.Saving, 5, 16),
+            ),
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
+        )
+    }
+}
+
+// The window before the photo count is known -- an indeterminate bar, not a
+// determinate one sitting at zero.
+@Preview(name = "Batch - preparing to download", showBackground = true)
+@Composable
+private fun UploadPreparingDownloadPreview() {
+    SnapFindAITheme {
+        UploadContent(
+            state = UploadScreenState(
+                matching = MatchingState.Idle,
+                history = previewJobs,
+                selectedJobs = setOf(1L, 2L),
+                operationInFlight = true,
+                batchProgress = JobBatchProgress(JobBatchProgress.Action.Saving),
+            ),
+            onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
+        )
+    }
+}
+
+@Preview(name = "Batch - deleting", showBackground = true)
+@Composable
+private fun UploadDeletingPreview() {
+    SnapFindAITheme {
+        UploadContent(
+            state = UploadScreenState(
+                matching = MatchingState.Idle,
+                history = previewJobs,
+                selectedJobs = setOf(1L, 2L, 3L),
+                operationInFlight = true,
+                batchProgress = JobBatchProgress(JobBatchProgress.Action.Deleting, 1, 3),
+            ),
             onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
         )
     }
@@ -862,12 +973,10 @@ private fun UploadSelectionPreview() {
 private fun UploadIdleDarkPreview() {
     SnapFindAITheme(darkTheme = true) {
         UploadContent(
-            uiState = UploadUiState.Idle,
-            jobHistory = previewJobs,
-            selfieUri = null,
-            hasZip = false,
-            zipFileName = null,
-            zipFileSizeBytes = null,
+            state = UploadScreenState(
+                matching = MatchingState.Idle,
+                history = previewJobs,
+            ),
             onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
         )
     }
@@ -878,12 +987,12 @@ private fun UploadIdleDarkPreview() {
 private fun UploadSmallPhonePreview() {
     SnapFindAITheme {
         UploadContent(
-            uiState = UploadUiState.Idle,
-            jobHistory = previewJobs,
-            selfieUri = Uri.parse("content://preview/selfie.jpg"),
-            hasZip = true,
-            zipFileName = "goa-trip-2026.zip",
-            zipFileSizeBytes = 412_000_000,
+            state = UploadScreenState(
+                matching = MatchingState.Idle,
+                selfieUri = Uri.parse("content://preview/selfie.jpg"),
+                archive = previewArchive,
+                history = previewJobs,
+            ),
             onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
         )
     }
@@ -894,12 +1003,12 @@ private fun UploadSmallPhonePreview() {
 private fun UploadLargePhonePreview() {
     SnapFindAITheme {
         UploadContent(
-            uiState = UploadUiState.Idle,
-            jobHistory = previewJobs,
-            selfieUri = Uri.parse("content://preview/selfie.jpg"),
-            hasZip = true,
-            zipFileName = "goa-trip-2026.zip",
-            zipFileSizeBytes = 412_000_000,
+            state = UploadScreenState(
+                matching = MatchingState.Idle,
+                selfieUri = Uri.parse("content://preview/selfie.jpg"),
+                archive = previewArchive,
+                history = previewJobs,
+            ),
             onChooseSelfie = {}, onChooseZip = {}, onSubmit = {}, onCancel = {}, onOpenJob = {},
         )
     }

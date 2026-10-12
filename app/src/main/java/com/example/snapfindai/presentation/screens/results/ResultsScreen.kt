@@ -35,6 +35,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.example.snapfindai.domain.model.FaceMatchResult
 import com.example.snapfindai.presentation.util.Thumbnail
@@ -61,7 +62,7 @@ fun ResultsScreen(
     onPhotoClick: (jobId: Long, photoPath: String) -> Unit,
     viewModel: ResultsViewModel = hiltViewModel(),
 ) {
-    val uiState by viewModel.uiState.collectAsState()
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
 
@@ -225,7 +226,13 @@ private fun ResultsContent(
                                     // silently discarded.
                                     enabled = !state.operationInFlight,
                                     onSaveClick = { onSaveToGallery(item.match) },
-                                    onClick = { if (state.selectionMode) onToggleSelected(item.match.photo) else onPhotoClick(state.jobId, item.match.photo.absolutePath) },
+                                    onClick = {
+                                        if (state.selectionMode) onToggleSelected(item.match.photo)
+                                        // Only reachable with a real job, since a tile exists
+                                        // only where a match does -- so the null branch is
+                                        // unreachable rather than silently ignored.
+                                        else state.jobId?.let { onPhotoClick(it, item.match.photo.absolutePath) }
+                                    },
                                     onLongClick = { onToggleSelected(item.match.photo) },
                                 )
                             }

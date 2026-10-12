@@ -17,13 +17,11 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material3.*
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.FabPosition
 import androidx.compose.material3.FloatingToolbarDefaults
 import androidx.compose.material3.HorizontalFloatingToolbar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -43,6 +41,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.example.snapfindai.domain.model.FaceMatchResult
 import com.example.snapfindai.presentation.components.SnapFindSnackbarHost
@@ -66,8 +65,8 @@ fun PhotoViewerScreen(
     onNavigateBack: () -> Unit,
     viewModel: PhotoViewerViewModel = hiltViewModel(),
 ) {
-    val photos by viewModel.photos.collectAsState()
-    val savingPhoto by viewModel.savingPhoto.collectAsState()
+    val photos by viewModel.photos.collectAsStateWithLifecycle()
+    val savingPhoto by viewModel.savingPhoto.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     val saveToGallery = rememberGallerySaveGate(snackbarHostState)
 

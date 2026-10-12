@@ -5,6 +5,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
+import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface JobDao {
@@ -99,6 +100,31 @@ interface JobDao {
 
     @Query("SELECT * FROM jobs WHERE status = :status ORDER BY timestamp DESC")
     suspend fun getAllJobs(status: String): List<JobEntity>
+
+    /**
+     * The history grid's jobs, as a stream that re-emits whenever they change.
+     *
+     * Paired with [observeMatchedPhotos] rather than being one joined query,
+     * because Room invalidates a `Flow` only on the tables the query actually
+     * reads. A flow over `jobs` alone never fires when a *photo* is removed --
+     * which changes a card's count, its size and possibly its preview -- so
+     * the grid would sit stale after exactly the edit the user just made.
+     */
+    @Query("SELECT * FROM jobs WHERE status = :status ORDER BY timestamp DESC")
+    fun observeJobs(status: String): Flow<List<JobEntity>>
+
+    /**
+     * Every matched photo, to be grouped by job in memory.
+     *
+     * One query rather than [getMatchedPhotosForJob] per job. The suspend path
+     * can afford that N+1 because it is a one-shot read; a stream re-runs on
+     * every write to either table, so the per-job queries would be paid again
+     * and again. `ORDER BY id` for the same reason it matters there -- grouping
+     * preserves encounter order, so each job's first photo is still the one
+     * the grid shows as its preview.
+     */
+    @Query("SELECT * FROM matched_photos ORDER BY id")
+    fun observeMatchedPhotos(): Flow<List<MatchedPhotoEntity>>
 
     /**
      * Self-heals finished jobs left with zero matched photos -- a stray row

@@ -6,6 +6,7 @@ import com.example.snapfindai.domain.model.JobCheckpoint
 import com.example.snapfindai.domain.model.JobSummary
 import com.example.snapfindai.domain.model.SavedJob
 import java.io.File
+import kotlinx.coroutines.flow.Flow
 
 /** Keeps every completed job so past results survive an app restart and can be reopened, not just the most recent one. */
 interface JobHistoryRepository {
@@ -108,6 +109,20 @@ interface JobHistoryRepository {
 
     /** Every saved job, newest first, as lightweight summaries for a history list/grid -- not the full match lists. */
     suspend fun getAllJobSummaries(): List<JobSummary>
+
+    /**
+     * The same summaries as [getAllJobSummaries], as a stream that re-emits
+     * whenever any of them change.
+     *
+     * The screen showing these used to call the one-shot read and then had to
+     * remember to call it again after every write -- finishing a job, deleting
+     * jobs, saving a batch, coming back from another screen. Five call sites,
+     * and the sixth was always going to be the one somebody forgot, with the
+     * symptom being a grid that silently disagreed with the database. A stream
+     * makes the refresh a property of the data rather than a thing each caller
+     * has to opt into.
+     */
+    fun observeJobSummaries(): Flow<List<JobSummary>>
 
     /** Records that [photo] (matched against by its persisted path) has been saved to the device gallery. */
     suspend fun markSavedToGallery(photo: File, savedAt: Long)

@@ -10,10 +10,9 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
-import com.example.snapfindai.domain.model.JobSummary
 import com.example.snapfindai.domain.usecase.DeleteJobUseCase
-import com.example.snapfindai.domain.usecase.GetJobHistoryUseCase
 import com.example.snapfindai.domain.usecase.GetJobUseCase
+import com.example.snapfindai.domain.usecase.ObserveJobHistoryUseCase
 import com.example.snapfindai.domain.usecase.PhotoSaveEvent
 import com.example.snapfindai.domain.usecase.SaveMatchedPhotosUseCase
 import com.example.snapfindai.utils.FileHelper
@@ -26,6 +25,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -33,7 +33,10 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.flow.retry
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -44,85 +47,34 @@ import kotlinx.coroutines.withContext
  * five-minute job finishing and vanishing.
  *
  * That makes WorkManager the source of truth for "is a job running and how
- * far along". This class maps that into [UploadUiState] rather than tracking
- * it itself, so the screen shows the real state of the job even if the
- * Activity it was started from is long gone.
+ * far along". This class maps that into [UploadScreenState] rather than
+ * tracking it itself, so the screen shows the real state of the job even if
+ * the Activity it was started from is long gone.
+ *
+ * One `StateFlow` of one state, not nine of their parts -- see
+ * [UploadScreenState] for what that was costing. Every mutation goes through
+ * `update {}`, which is a compare-and-set loop rather than a read followed by
+ * a write, so two updates can't interleave and lose one of their changes.
  */
 @HiltViewModel
 class UploadViewModel @Inject constructor(
-    private val getJobHistory: GetJobHistoryUseCase,
+    observeJobHistory: ObserveJobHistoryUseCase,
     private val deleteJob: DeleteJobUseCase,
     private val getJob: GetJobUseCase,
     private val saveMatchedPhotos: SaveMatchedPhotosUseCase,
     private val workManager: WorkManager,
 ) : ViewModel() {
 
-    private val _uiState = MutableStateFlow<UploadUiState>(UploadUiState.Idle)
-    val uiState: StateFlow<UploadUiState> = _uiState.asStateFlow()
-
-    // Every past job, newest first, shown as grid cards on this screen --
-    // opening one navigates straight to its Results, bypassing uiState
-    // entirely (see MainActivity's onOpenJob wiring).
-    private val _jobHistory = MutableStateFlow<List<JobSummary>>(emptyList())
-    val jobHistory: StateFlow<List<JobSummary>> = _jobHistory.asStateFlow()
-
-    // Held here rather than in the composable, for two reasons. The screen's
-    // own `remember` was lost on a configuration change, so rotating the
-    // phone silently threw away what the user had picked. And nothing cleared
-    // it when a job ended, so after cancelling one the step buttons still read
-    // "Selected" for files the user had just abandoned.
-    private val _selfieUri = MutableStateFlow<Uri?>(null)
-    val selfieUri: StateFlow<Uri?> = _selfieUri.asStateFlow()
-
-    private val _zipUri = MutableStateFlow<Uri?>(null)
-    val zipUri: StateFlow<Uri?> = _zipUri.asStateFlow()
-
-    private val _zipFileName = MutableStateFlow<String?>(null)
-    val zipFileName: StateFlow<String?> = _zipFileName.asStateFlow()
-
-    private val _zipFileSizeBytes = MutableStateFlow<Long?>(null)
-    val zipFileSizeBytes: StateFlow<Long?> = _zipFileSizeBytes.asStateFlow()
-
-    fun onSelfiePicked(uri: Uri?) {
-        _selfieUri.value = uri
-        clearStaleError()
-    }
-
-    fun onZipPicked(context: Context, uri: Uri?) {
-        _zipUri.value = uri
-        _zipFileName.value = null
-        _zipFileSizeBytes.value = null
-        clearStaleError()
-        if (uri == null) return
-        viewModelScope.launch {
-            val (name, size) = withContext(Dispatchers.IO) { queryZipInfo(context, uri) }
-            _zipFileName.value = name
-            _zipFileSizeBytes.value = size
-        }
-    }
-
-    private fun queryZipInfo(context: Context, uri: Uri): Pair<String?, Long?> {
-        return context.contentResolver.query(
-            uri,
-            arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
-            null, null, null,
-        )?.use { cursor ->
-            if (!cursor.moveToFirst()) return@use null to null
-            val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-            val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
-            val name = nameIdx.takeIf { it >= 0 }?.let { cursor.getString(it) }
-            val size = sizeIdx.takeIf { it >= 0 && !cursor.isNull(it) }?.let { cursor.getLong(it) }
-            name to size
-        } ?: (null to null)
-    }
+    private val _state = MutableStateFlow(UploadScreenState())
+    val state: StateFlow<UploadScreenState> = _state.asStateFlow()
 
     // One-shot, rather than something the screen re-derives from
-    // `uiState == Success`. Reading it off state broke whenever Results was
+    // `matching == Success`. Reading it off state broke whenever Results was
     // left by the system back gesture instead of its in-app back button: that
     // path pops straight through Compose Navigation's own back handler, so
-    // nothing reset uiState, it was still Success when Upload reappeared, and
-    // the screen immediately navigated forward again. An event fires exactly
-    // once and is never re-derived afterwards.
+    // nothing reset the state, it was still Success when Upload reappeared,
+    // and the screen immediately navigated forward again. An event fires
+    // exactly once and is never re-derived afterwards.
     //
     // A Channel specifically, because this one has to arrive. On a bare
     // SharedFlow `emit` suspends until something is collecting, so a job
@@ -134,8 +86,6 @@ class UploadViewModel @Inject constructor(
     private val _navigateToResults = Channel<Unit>(Channel.BUFFERED)
     val navigateToResults: Flow<Unit> = _navigateToResults.receiveAsFlow()
 
-    // One-shot, like navigateToResults: a snackbar and a notification must
-    // fire once per batch, not again every time the screen recomposes.
     // The opposite choice, for the opposite kind of event. These say what a
     // batch did, and a message is only true at the moment it is produced --
     // replaying "17 saved" at whoever happens to compose next, minutes
@@ -157,8 +107,85 @@ class UploadViewModel @Inject constructor(
     private var handledWorkId: UUID? = null
 
     init {
-        refreshHistory()
+        collectJobHistory(observeJobHistory)
         observeMatchingJob()
+    }
+
+    /**
+     * The grid's contents, now a stream off the database rather than a value
+     * this class re-read by hand.
+     *
+     * It used to be a one-shot read with five `refreshHistory()` call sites --
+     * startup, job completion, delete, batch save, and screen resume -- each
+     * of which had to remember to fire. The sixth was always going to be the
+     * one somebody forgot, and the symptom would have been a grid quietly
+     * disagreeing with the database. All five are now gone; a write updates
+     * the grid because it was a write.
+     */
+    private fun collectJobHistory(observeJobHistory: ObserveJobHistoryUseCase) {
+        viewModelScope.launch {
+            observeJobHistory()
+                // Retried before giving up, because a throw *terminates* a
+                // flow. The one-shot read this replaced got a fresh attempt
+                // every time something called it, so without this the stream
+                // would be the less robust of the two: one transient failure
+                // and the grid stops updating for as long as the ViewModel
+                // lives, silently.
+                .retry(HISTORY_RETRIES) { e ->
+                    Log.w(TAG, "Couldn't read the job history, retrying", e)
+                    delay(HISTORY_RETRY_DELAY_MS)
+                    true
+                }
+                // Past that, the grid keeps its last good value rather than
+                // emptying -- the same policy as before, for the same reason:
+                // "the database couldn't be read" and "you have no jobs" look
+                // identical on screen, and only one of them is true.
+                .catch { e -> Log.w(TAG, "Gave up observing the job history", e) }
+                .collect { history -> _state.update { it.copy(history = history) } }
+        }
+    }
+
+    fun onSelfiePicked(uri: Uri?) {
+        // The pick and the error it answers clear together, in one update --
+        // two updates would emit an intermediate state holding the new selfie
+        // beside the old error, which is the kind of combination this whole
+        // state object exists to make unrepresentable.
+        _state.update { it.withoutStaleError().copy(selfieUri = uri) }
+    }
+
+    fun onZipPicked(context: Context, uri: Uri?) {
+        // The whole archive replaced in one write, metadata included, so there
+        // is no instant where this uri is paired with the last pick's name.
+        _state.update {
+            it.withoutStaleError().copy(archive = uri?.let { picked -> PickedArchive(picked) })
+        }
+        if (uri == null) return
+        viewModelScope.launch {
+            val (name, size) = withContext(Dispatchers.IO) { queryZipInfo(context, uri) }
+            // Matched on the uri before applying: the query is asynchronous,
+            // and a user who picks a second archive while the first one's
+            // query is still running would otherwise have the first one's
+            // filename land on the second one's pick.
+            _state.update { current ->
+                if (current.archive?.uri != uri) current
+                else current.copy(archive = current.archive.copy(name = name, sizeBytes = size))
+            }
+        }
+    }
+
+    private fun queryZipInfo(context: Context, uri: Uri): Pair<String?, Long?> {
+        return context.contentResolver.query(
+            uri,
+            arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
+            null, null, null,
+        )?.use { cursor ->
+            if (!cursor.moveToFirst()) return@use null to null
+            val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
+            val name = nameIdx.takeIf { it >= 0 }?.let { cursor.getString(it) }
+            val size = sizeIdx.takeIf { it >= 0 && !cursor.isNull(it) }?.let { cursor.getLong(it) }
+            name to size
+        } ?: (null to null)
     }
 
     private fun observeMatchingJob() {
@@ -172,22 +199,27 @@ class UploadViewModel @Inject constructor(
                     -> {
                         // -1 rather than 0 as the absent marker: zero photos
                         // scored is a real value the job reports at the start.
-                        _uiState.value = UploadUiState.Processing(
-                            scored = info.progress.getInt(MatchPhotosWorker.KEY_SCORED, -1).takeIf { it >= 0 },
-                            total = info.progress.getInt(MatchPhotosWorker.KEY_TOTAL, -1).takeIf { it >= 0 },
+                        setMatching(
+                            MatchingState.Processing(
+                                scored = info.progress.getInt(MatchPhotosWorker.KEY_SCORED, -1).takeIf { it >= 0 },
+                                total = info.progress.getInt(MatchPhotosWorker.KEY_TOTAL, -1).takeIf { it >= 0 },
+                            )
                         )
                     }
 
                     WorkInfo.State.SUCCEEDED -> onceFor(info.id) {
                         val matchCount = info.outputData.getInt(MatchPhotosWorker.KEY_MATCH_COUNT, 0)
                         // That job is over, so the picks that produced it are
-                        // no longer a setup for anything.
-                        clearPickedFiles()
-                        refreshHistory()
+                        // no longer a setup for anything. The grid needs no
+                        // nudge -- the worker's own writes drive it now.
                         if (matchCount == 0) {
-                            _uiState.value = UploadUiState.Error("No matches found. Try a clearer selfie.")
+                            _state.update {
+                                it.withoutPicks().copy(
+                                    matching = MatchingState.Error("No matches found. Try a clearer selfie."),
+                                )
+                            }
                         } else {
-                            _uiState.value = UploadUiState.Success
+                            _state.update { it.withoutPicks().copy(matching = MatchingState.Success) }
                             _navigateToResults.send(Unit)
                         }
                     }
@@ -200,11 +232,15 @@ class UploadViewModel @Inject constructor(
                     // of which file to change. Dropping just the selfie says
                     // in the UI what the message says in words.
                     WorkInfo.State.FAILED -> onceFor(info.id) {
-                        clearPickedSelfie()
-                        _uiState.value = UploadUiState.Error(
-                            info.outputData.getString(MatchPhotosWorker.KEY_ERROR)
-                                ?: "An unknown error occurred."
-                        )
+                        _state.update {
+                            it.copy(
+                                selfieUri = null,
+                                matching = MatchingState.Error(
+                                    info.outputData.getString(MatchPhotosWorker.KEY_ERROR)
+                                        ?: "An unknown error occurred."
+                                ),
+                            )
+                        }
                     }
 
                     // The screen's own Cancel already did both of these.
@@ -215,8 +251,7 @@ class UploadViewModel @Inject constructor(
                     // buttons still reading "Selected" for a job that no
                     // longer exists.
                     WorkInfo.State.CANCELLED -> onceFor(info.id) {
-                        _uiState.value = UploadUiState.Idle
-                        clearPickedFiles()
+                        _state.update { it.withoutPicks().copy(matching = MatchingState.Idle) }
                     }
                 }
             }
@@ -234,9 +269,9 @@ class UploadViewModel @Inject constructor(
     }
 
     fun submitJob(context: Context) {
-        val selfieUri = _selfieUri.value ?: return
-        val zipUri = _zipUri.value ?: return
-        _uiState.value = UploadUiState.Processing()
+        val selfieUri = _state.value.selfieUri ?: return
+        val zipUri = _state.value.archive?.uri ?: return
+        setMatching(MatchingState.Processing())
 
         viewModelScope.launch {
             // Built first purely for its id, which names the directory this
@@ -260,7 +295,7 @@ class UploadViewModel @Inject constructor(
                 selfie != null && zip != null
             }
             if (!copied) {
-                _uiState.value = UploadUiState.Error("Failed to read the selected files.")
+                setMatching(MatchingState.Error("Failed to read the selected files."))
                 return@launch
             }
 
@@ -283,58 +318,26 @@ class UploadViewModel @Inject constructor(
      * cancellation reaches it as a normal coroutine cancellation.
      */
     fun cancelJob() {
-        _uiState.value = UploadUiState.Idle
-        clearPickedFiles()
+        _state.update { it.withoutPicks().copy(matching = MatchingState.Idle) }
         workManager.cancelUniqueWork(MatchPhotosWorker.WORK_NAME)
     }
 
-    /**
-     * Drops an error message once the user acts on it by picking a different
-     * file.
-     *
-     * An error describes the attempt that produced it, and choosing a new
-     * selfie or archive is the user answering it -- so it stops being true at
-     * that moment. It used to survive: "No matches found. Try a clearer
-     * selfie." stayed on screen while they picked the new selfie and sat
-     * directly above an enabled Find My Photos, clearing only when the next
-     * job actually started.
-     *
-     * Error only. Processing and Success belong to a job rather than to this
-     * form, and picking a file can't invalidate either.
-     */
-    private fun clearStaleError() {
-        if (_uiState.value is UploadUiState.Error) _uiState.value = UploadUiState.Idle
-    }
-
-    /** Just the selfie -- see the FAILED branch for why the archive is left alone. */
-    private fun clearPickedSelfie() {
-        _selfieUri.value = null
-    }
-
-    private fun clearPickedFiles() {
-        _selfieUri.value = null
-        _zipUri.value = null
-        _zipFileName.value = null
-        _zipFileSizeBytes.value = null
+    private fun setMatching(matching: MatchingState) {
+        _state.update { it.copy(matching = matching) }
     }
 
     /**
-     * Called when the Upload screen comes back to the foreground, to pick up
-     * anything that changed while it was away -- photos saved or removed
-     * inside a job, or a whole job deleted.
+     * Called when the Upload screen comes back to the foreground, to forget
+     * the outcome of a job the user has already moved on from.
      *
-     * This used to be driven from the *other* side: a `DisposableEffect` on
-     * the Results destination ran it from `onDispose`, on the reasoning that
-     * disposal is the one thing every way of leaving that screen has in
-     * common. It is, but it is also common to things that aren't leaving at
-     * all -- a rotation disposes the composable, and so does navigating
-     * deeper into the photo viewer. So it fired on rotation, and it fired on
-     * the way *in* to the viewer, each time resetting this screen's state and
-     * re-reading the database for no reason.
-     *
-     * Asking on resume instead means it runs exactly when the answer is about
-     * to be looked at, whatever happened in between. It's the same pattern
-     * ResultsScreen already uses for the same problem.
+     * It used to refresh the job history too, which is what it mostly existed
+     * for; the history is a stream now and keeps itself current. And it used
+     * to be driven from the *other* side: a `DisposableEffect` on the Results
+     * destination ran it from `onDispose`, on the reasoning that disposal is
+     * the one thing every way of leaving that screen has in common. It is,
+     * but it is also common to things that aren't leaving at all -- a rotation
+     * disposes the composable, and so does navigating deeper into the photo
+     * viewer.
      */
     fun onScreenResumed() {
         // Processing is left alone, and the guard matters precisely because
@@ -345,48 +348,44 @@ class UploadViewModel @Inject constructor(
         // every time the user came back to the app, until whenever the next
         // progress update happened to land. The old placement never saw a
         // running job, because it only fired as Results was disposed.
-        if (_uiState.value !is UploadUiState.Processing) _uiState.value = UploadUiState.Idle
-        refreshHistory()
+        _state.update {
+            if (it.matching is MatchingState.Processing) it else it.copy(matching = MatchingState.Idle)
+        }
     }
 
     // --- Selecting jobs ---
 
-    // Mirrors the results grid: long-press starts selecting, tapping toggles,
-    // and an empty set *is* "not selecting" rather than a second flag that
-    // could disagree with it.
-    private val _selectedJobs = MutableStateFlow<Set<Long>>(emptySet())
-    val selectedJobs: StateFlow<Set<Long>> = _selectedJobs.asStateFlow()
-
-    /**
-     * True while a batch download or delete is running, which disables both.
-     * They touch the same files -- deleting a job removes the very photos
-     * another batch may be mid-copy into the gallery -- so the dangerous
-     * combination isn't two downloads, it's a delete landing during one.
-     */
-    private val _operationInFlight = MutableStateFlow(false)
-    val operationInFlight: StateFlow<Boolean> = _operationInFlight.asStateFlow()
-
     fun toggleJobSelected(jobId: Long) {
-        _selectedJobs.value = _selectedJobs.value.let { if (jobId in it) it - jobId else it + jobId }
+        _state.update {
+            it.copy(selectedJobs = if (jobId in it.selectedJobs) it.selectedJobs - jobId else it.selectedJobs + jobId)
+        }
     }
 
     fun clearSelection() {
-        _selectedJobs.value = emptySet()
+        _state.update { it.copy(selectedJobs = emptySet()) }
     }
 
     /**
      * Deletes the selected jobs and the photos this app was storing for them.
      * The user's gallery is untouched -- see [DeleteJobUseCase].
      */
-    fun deleteSelectedJobs() = deleteJobs(_selectedJobs.value)
+    fun deleteSelectedJobs() = deleteJobs(_state.value.selectedJobs)
 
     private fun deleteJobs(jobIds: Set<Long>) {
-        if (jobIds.isEmpty() || _operationInFlight.value) return
-        _operationInFlight.value = true
+        if (jobIds.isEmpty() || _state.value.operationInFlight) return
+        // Determinate from the first frame, unlike the download below: the
+        // number of jobs to delete is the size of the selection, known before
+        // any work starts.
+        _state.update {
+            it.copy(
+                operationInFlight = true,
+                batchProgress = JobBatchProgress(JobBatchProgress.Action.Deleting, 0, jobIds.size),
+            )
+        }
         viewModelScope.launch {
             var failedCount = 0
             try {
-                jobIds.forEach { jobId ->
+                jobIds.forEachIndexed { index, jobId ->
                     // Caught per job, not around the loop: one undeletable row
                     // shouldn't strand every other job the user selected. The
                     // same rule the batch save follows.
@@ -398,19 +397,29 @@ class UploadViewModel @Inject constructor(
                         failedCount++
                         Log.w(TAG, "Couldn't delete job $jobId", e)
                     }
+                    // Counted after the attempt whether or not it succeeded:
+                    // the bar measures how far through the selection we are,
+                    // not how much of it worked. What failed is reported
+                    // separately, below.
+                    _state.update {
+                        it.copy(
+                            batchProgress = JobBatchProgress(
+                                JobBatchProgress.Action.Deleting, index + 1, jobIds.size,
+                            ),
+                        )
+                    }
                 }
             } finally {
                 // finally, so a failure part-way can't leave the screen
                 // permanently unable to delete or download anything.
-                _operationInFlight.value = false
-                clearSelection()
+                _state.update {
+                    it.copy(operationInFlight = false, selectedJobs = emptySet(), batchProgress = null)
+                }
             }
-            // Below the try rather than inside it, and now actually reached:
-            // nothing here caught, so a throw from deleteJob ran the finally
-            // and then propagated -- which both crashed the app and, before
-            // it did, skipped this refresh and left the deleted jobs on
-            // screen as though nothing had happened.
-            refreshHistory()
+            // No refresh here any more: deleting the rows is what updates the
+            // grid, because the grid observes them. This used to be a manual
+            // re-read sitting after a try/finally that didn't catch, so a
+            // throw skipped it and left the deleted jobs on screen.
             if (failedCount > 0) _events.emit(UploadEvent.JobsDeleteFailed(failedCount))
         }
     }
@@ -423,29 +432,46 @@ class UploadViewModel @Inject constructor(
      * anything already there is counted as skipped rather than written twice.
      */
     fun downloadSelectedJobs() {
-        val jobIds = _selectedJobs.value
-        if (jobIds.isEmpty() || _operationInFlight.value) return
-        _operationInFlight.value = true
+        val jobIds = _state.value.selectedJobs
+        if (jobIds.isEmpty() || _state.value.operationInFlight) return
+        // Set before the reads below, with no counts yet, so the bar appears
+        // the moment the user taps rather than once the first photo lands.
+        // Those reads open every selected job, which on a large selection is
+        // itself long enough to need saying something.
+        _state.update {
+            it.copy(
+                operationInFlight = true,
+                batchProgress = JobBatchProgress(JobBatchProgress.Action.Saving),
+            )
+        }
         viewModelScope.launch {
             // Read in the grid's own order, so a progress count moves through
             // the jobs in the order the user sees them.
-            val matches = _jobHistory.value
+            val matches = _state.value.history
                 .filter { it.id in jobIds }
                 .flatMap { getJob(it.id)?.matches.orEmpty() }
 
             val outcome = try {
                 saveMatchedPhotos(matches) { event ->
                     if (event is PhotoSaveEvent.Progress) {
-                        _batchProgress.value = event.completed to event.total
+                        _state.update {
+                            it.copy(
+                                batchProgress = JobBatchProgress(
+                                    JobBatchProgress.Action.Saving, event.completed, event.total,
+                                ),
+                            )
+                        }
                     }
                 }
             } finally {
-                _batchProgress.value = null
-                _operationInFlight.value = false
-                clearSelection()
+                _state.update {
+                    it.copy(batchProgress = null, operationInFlight = false, selectedJobs = emptySet())
+                }
             }
 
-            refreshHistory() // the saved ticks inside those jobs have moved
+            // The saved ticks inside those jobs have moved, and the grid
+            // picks that up on its own -- markSavedToGallery writes to
+            // matched_photos, which the history stream observes.
             _events.emit(
                 UploadEvent.BatchSaveCompleted(
                     savedCount = outcome.savedCount,
@@ -457,31 +483,29 @@ class UploadViewModel @Inject constructor(
         }
     }
 
-    /** (completed, total) while a batch download runs, null otherwise. */
-    private val _batchProgress = MutableStateFlow<Pair<Int, Int>?>(null)
-    val batchProgress: StateFlow<Pair<Int, Int>?> = _batchProgress.asStateFlow()
-
-    private fun refreshHistory() {
-        viewModelScope.launch {
-            // Keeps whatever list it already has when the read fails, rather
-            // than blanking the grid -- "the database couldn't be read" and
-            // "you have no jobs" look identical on screen, and only one of
-            // them is true. Unhandled this was an uncaught coroutine
-            // exception: a Room failure here took the whole app down, on a
-            // path that runs on startup and after every job.
-            val history = try {
-                getJobHistory()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "Couldn't read the job history", e)
-                return@launch
-            }
-            _jobHistory.value = history
-        }
-    }
-
     private companion object {
         const val TAG = "UploadViewModel"
+        /** Enough to ride out a locked database, few enough to stop if it's actually broken. */
+        const val HISTORY_RETRIES = 3L
+        const val HISTORY_RETRY_DELAY_MS = 500L
     }
 }
+
+/** Both inputs dropped, for the paths where the job they belonged to has ended. */
+private fun UploadScreenState.withoutPicks() = copy(selfieUri = null, archive = null)
+
+/**
+ * Drops an error message that the user has just acted on by picking a
+ * different file.
+ *
+ * An error describes the attempt that produced it, and choosing a new selfie
+ * or archive is the user answering it -- so it stops being true at that
+ * moment. It used to survive: "No matches found. Try a clearer selfie."
+ * stayed on screen while they picked the new selfie and sat directly above an
+ * enabled Find My Photos, clearing only when the next job actually started.
+ *
+ * Error only. Processing and Success belong to a job rather than to this
+ * form, and picking a file can't invalidate either.
+ */
+private fun UploadScreenState.withoutStaleError() =
+    if (matching is MatchingState.Error) copy(matching = MatchingState.Idle) else this

@@ -8,6 +8,7 @@ import com.example.snapfindai.domain.model.SavedJob
 import com.example.snapfindai.domain.repository.GallerySaveResult
 import com.example.snapfindai.domain.repository.JobHistoryRepository
 import com.example.snapfindai.domain.repository.PhotoGalleryRepository
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -112,6 +113,7 @@ class ReconcileSavedPhotosUseCaseTest {
         override suspend fun getLastJob(): SavedJob? = unused()
         override suspend fun getJob(jobId: Long): SavedJob? = unused()
         override suspend fun getAllJobSummaries(): List<JobSummary> = unused()
+        override fun observeJobSummaries(): Flow<List<JobSummary>> = unused()
         override suspend fun removeMatches(photos: List<File>) = unused()
 
         private fun unused(): Nothing = throw UnsupportedOperationException("not part of reconciliation")

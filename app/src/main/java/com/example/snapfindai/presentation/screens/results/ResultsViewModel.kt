@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /**
@@ -67,7 +68,7 @@ class ResultsViewModel @Inject constructor(
                 val job = if (requestedJobId != null) getJob(requestedJobId) else getLastJob()
                 val matches = reconcileSavedPhotos(job?.matches.orEmpty())
                 ResultsUiState.Loaded(
-                    jobId = job?.id ?: -1L,
+                    jobId = job?.id,
                     matches = matches.map { MatchItemState(it, statusFor(it)) },
                     scannedCount = job?.scannedCount ?: 0,
                 )
@@ -253,9 +254,24 @@ class ResultsViewModel @Inject constructor(
         state.copy(matches = state.matches.map { if (it.match.photo == match.photo) it.copy(saveStatus = status) else it })
     }
 
+    /**
+     * Applies [transform] if the screen is in its loaded state, atomically.
+     *
+     * `update` rather than a read of `.value` followed by a write to it. The
+     * read-modify-write version was correct only by accident: it holds as long
+     * as every caller happens to be on the main dispatcher, which they all
+     * are today, and the first one that isn't would silently lose whichever
+     * update it interleaved with -- a tick, a progress step, a cleared
+     * selection. `update` is a compare-and-set loop, so the guarantee comes
+     * from the call rather than from a convention nothing enforces.
+     *
+     * [transform] must therefore be free of side effects: a losing CAS runs it
+     * again. Every caller here only copies the state, which is the rule.
+     */
     private inline fun updateLoaded(transform: (ResultsUiState.Loaded) -> ResultsUiState.Loaded) {
-        val current = _uiState.value
-        if (current is ResultsUiState.Loaded) _uiState.value = transform(current)
+        _uiState.update { current ->
+            if (current is ResultsUiState.Loaded) transform(current) else current
+        }
     }
 
     private companion object {

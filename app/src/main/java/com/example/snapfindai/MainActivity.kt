@@ -7,11 +7,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -43,9 +43,9 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             SnapFindAITheme {
-                val isChecking by startupViewModel.isChecking.collectAsState()
+                val isChecking by startupViewModel.isChecking.collectAsStateWithLifecycle()
                 if (!isChecking) {
-                    val modelsReady by startupViewModel.modelsReady.collectAsState()
+                    val modelsReady by startupViewModel.modelsReady.collectAsStateWithLifecycle()
                     val navController = rememberNavController()
                     val uploadViewModel: UploadViewModel = hiltViewModel()
 
