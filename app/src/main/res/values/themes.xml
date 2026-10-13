@@ -23,7 +23,13 @@
          dismissed, via postSplashScreenTheme. -->
     <style name="Theme.SnapFindAI.Starting" parent="Theme.SplashScreen">
         <item name="windowSplashScreenBackground">@color/clay_background</item>
-        <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
+        <!-- The foreground layer alone, not @mipmap/ic_launcher: the
+             adaptive icon's background layer is an opaque square, and the
+             splash screen doesn't mask it into an icon shape the way a
+             launcher does; it just drew the square. The foreground is
+             already transparent outside the mark, so the window's own
+             windowSplashScreenBackground shows through instead. -->
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
         <item name="postSplashScreenTheme">@style/Theme.SnapFindAI</item>
     </style>
 </resources>

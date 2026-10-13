@@ -10,7 +10,7 @@ Backend lives in [`../Face_recognition/`](../Face_recognition/) — no longer ca
 
 ## User flow
 
-0. First launch only: a splash screen, then Onboarding downloads the ~16MB face-matching models with a real progress bar (skipped on every launch after)
+0. First launch only: a splash screen carrying the app's own Clay Wave mark, then Onboarding downloads the ~16MB face-matching models with a real progress bar (skipped on every launch after)
 1. Pick a selfie + a ZIP of event photos
 2. Tap "Find My Photos" — reads each photo straight out of the archive and matches on-device, cancellable while it runs. The job runs in a foreground-service worker, so **leaving the app doesn't kill it**: progress continues in a notification, and a job that finishes while the app is closed delivers its result there. If the OS kills the process anyway, the job **resumes from where it stopped** rather than starting the event folder again
 3. Results screen shows every matched photo in a grid. One download control per mode: `Download N` in the app bar for everything outstanding, a `Download` action in the selection bar after a long-press, and download/remove in the full-screen viewer for a single photo. Tiles themselves show only status — a tick once a photo is in your gallery
