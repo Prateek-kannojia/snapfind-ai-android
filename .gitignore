@@ -19,3 +19,16 @@ facesdk/src/debug/assets/models/
 
 # adb-pulled debug output from the spike — regenerate locally, never commit.
 /*.csv
+
+# Private release-prep notes: account state, store-listing drafts and the
+# order things get submitted in. Useful locally, not part of the project's
+# public story.
+/PLAY_STORE_LAUNCH_CHECKLIST.md
+
+# Signing material for the Play upload key. The keystore itself is the one
+# file in this project that cannot be regenerated, and the properties file
+# holds its passwords in plain text — neither ever goes to a remote.
+*.jks
+*.keystore
+/keystore.properties
+/signing.properties
