@@ -2,7 +2,6 @@ package com.example.snapfindai.presentation.screens.onboarding
 
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -100,7 +99,14 @@ private fun OnboardingContent(
 @Composable
 private fun Hero(modifier: Modifier = Modifier) {
     Column(
-        modifier = modifier.background(MaterialTheme.colorScheme.surface),
+        // `background`, the same ground every other screen uses -- not
+        // `surface`. The hero takes weight(1f), so whatever it paints *is*
+        // the screen, and painting `surface` here meant onboarding was the
+        // one screen in the app on a different colour (#EFECE6 against
+        // #EAE7E1 everywhere else, and a wider gap in dark). It also left the
+        // sheet sitting on its own colour, which is why that seam needed a
+        // border to be visible at all.
+        modifier = modifier.background(MaterialTheme.colorScheme.background),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
@@ -154,10 +160,39 @@ private fun Sheet(
         modifier = modifier
             .fillMaxWidth()
             .heightIn(min = minHeight)
-            .shadow(elevation = SnapFindDimens.elevation, shape = sheetShape, clip = false)
-            .border(SnapFindDimens.borderWidth, MaterialTheme.colorScheme.outline, sheetShape)
+            // Lift instead of a line. This carried a 1.5dp `outline` border,
+            // which was the only thing separating the sheet from the hero
+            // while the two were the same colour -- a hard hairline doing
+            // structural work on a theme built on the idea that nothing has a
+            // sharp edge. Now the hero is `background` and the sheet is
+            // `surface`, so there is a real step behind it, and the shadow is
+            // free to be what says "this is in front".
+            //
+            // clip = false so the shadow can fall *outside* the shape; the
+            // clip below then rounds the background without taking the
+            // shadow with it.
+            .shadow(elevation = SnapFindDimens.sheetElevation, shape = sheetShape, clip = false)
             .clip(sheetShape)
-            .background(MaterialTheme.colorScheme.surface)
+            // `surfaceBright`, the brightest surface the scheme defines, and
+            // the choice is measured rather than aesthetic. This was
+            // `surface`, which sits only 1.05:1 from the page in light and
+            // 1.11:1 in dark -- different values, perceptually one colour, so
+            // the sheet read as fused to the hero no matter how much shadow
+            // was under it. surfaceBright is 1.12:1 and 1.37:1.
+            //
+            // It is also the only candidate that doesn't invert between
+            // themes. The obvious pick, `surfaceContainerLowest`, is the
+            // lightest role in light (1.17:1) but the *darkest* in dark --
+            // which would have made the sheet read as recessed into the page
+            // rather than lifted off it, in exactly half the installs.
+            // `surfaceContainerHigh`/`Highest` invert the other way.
+            //
+            // A colour step is doing this work because Material's own
+            // mechanism for it is switched off here: tonal elevation lightens
+            // a raised surface by blending `surfaceTint` into it, and Theme.kt
+            // pins that tint to a no-op on purpose so nothing pushes coral
+            // into the clay. With that gone, lift has to be stated.
+            .background(MaterialTheme.colorScheme.surfaceBright)
             .animateContentSize()
             .padding(horizontal = SnapFindSpacing.xl, vertical = SnapFindSpacing.xl),
         horizontalAlignment = Alignment.CenterHorizontally,

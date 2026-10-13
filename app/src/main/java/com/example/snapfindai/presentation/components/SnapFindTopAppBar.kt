@@ -6,12 +6,14 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -60,6 +62,11 @@ fun SnapFindTopAppBar(
         actions = actions,
         colors = TopAppBarDefaults.topAppBarColors(
             containerColor = MaterialTheme.colorScheme.background,
+            // The same colour scrolled as at rest. Material raises a bar onto
+            // `surfaceContainer` once content moves under it, which is the
+            // tonal-elevation trick this theme turns off everywhere else --
+            // letting it apply here would give the bar a different ground from
+            // its own screen the moment the user scrolled.
             scrolledContainerColor = MaterialTheme.colorScheme.background,
         ),
     )
@@ -70,6 +77,7 @@ fun SnapFindTopAppBar(
 // a preview on white cannot show. A title alone, a title with an accented
 // action, and a selection bar: enough to see that the heading and the action
 // read as different things.
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun TopAppBarPreviewContent() {
     Surface(color = MaterialTheme.colorScheme.background) {
@@ -83,13 +91,12 @@ private fun TopAppBarPreviewContent() {
                     }
                 },
                 actions = {
-                    SnapFindButton(
-                        text = "Download 17",
+                    TextButton(
                         onClick = {},
-                        variant = SnapFindButtonVariant.Tonal,
-                        fillWidth = false,
-                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                    )
+                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onPrimaryContainer),
+                    ) {
+                        Text("Save 17", fontWeight = FontWeight.Bold)
+                    }
                 },
             )
             SnapFindTopAppBar(
@@ -100,13 +107,12 @@ private fun TopAppBarPreviewContent() {
                     }
                 },
                 actions = {
-                    SnapFindButton(
-                        text = "Download",
+                    TextButton(
                         onClick = {},
-                        variant = SnapFindButtonVariant.Tonal,
-                        fillWidth = false,
-                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                    )
+                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onPrimaryContainer),
+                    ) {
+                        Text("Save 9", fontWeight = FontWeight.Bold)
+                    }
                     IconButton(onClick = {}) {
                         Icon(
                             Icons.Default.Delete,

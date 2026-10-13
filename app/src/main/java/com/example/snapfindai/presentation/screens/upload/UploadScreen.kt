@@ -6,17 +6,17 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -26,12 +26,16 @@ import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -47,6 +51,8 @@ import com.example.snapfindai.domain.model.JobSummary
 import com.example.snapfindai.presentation.components.SnapFindButton
 import com.example.snapfindai.presentation.components.SnapFindButtonSlot
 import com.example.snapfindai.presentation.components.SnapFindButtonVariant
+import com.example.snapfindai.presentation.components.SnapFindConfirmDialog
+import com.example.snapfindai.presentation.components.SnapFindFab
 import com.example.snapfindai.presentation.components.SnapFindMark
 import com.example.snapfindai.presentation.components.SnapFindMarkState
 import com.example.snapfindai.presentation.components.SnapFindPhotoCard
@@ -55,7 +61,9 @@ import com.example.snapfindai.presentation.components.SnapFindSnackbarHost
 import com.example.snapfindai.presentation.components.SnapFindTopAppBar
 import com.example.snapfindai.presentation.components.WavyProgressRing
 import com.example.snapfindai.presentation.util.Thumbnail
+import com.example.snapfindai.presentation.util.rememberAppearTransition
 import com.example.snapfindai.presentation.util.rememberGallerySaveGate
+import com.example.snapfindai.presentation.util.rememberSwapTransition
 import com.example.snapfindai.utils.DownloadNotificationHelper
 import com.example.snapfindai.ui.theme.ClayPillShape
 import com.example.snapfindai.ui.theme.ClayShapes
@@ -63,6 +71,7 @@ import com.example.snapfindai.ui.theme.SnapFindAITheme
 import com.example.snapfindai.ui.theme.SnapFindDimens
 import com.example.snapfindai.ui.theme.SnapFindSpacing
 import java.io.File
+import kotlinx.coroutines.launch
 
 @Composable
 fun UploadScreen(
@@ -152,7 +161,6 @@ fun UploadScreen(
     )
 }
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun UploadContent(
     state: UploadScreenState,
@@ -177,9 +185,52 @@ private fun UploadContent(
 
     BackHandler(enabled = selectionMode) { onClearSelection() }
 
+    // Checked here, above the Scaffold, rather than inside its content lambda.
+    // It was an early return in that lambda, which swapped the *content* and
+    // nothing else: a Scaffold's slots are separate lambdas, so the app bar,
+    // the snackbar host and -- visibly -- the floating action button all went
+    // on composing. A FAB offering to scroll to a form, over a screen with no
+    // form and no grid, was the symptom. A matching job is a different screen,
+    // so it is now a different Scaffold, and nothing can leak into it.
+    val processingState = state.matching as? MatchingState.Processing
+    if (processingState != null) {
+        MatchingScreen(state = processingState, onCancel = onCancel)
+        return
+    }
+
+    val scope = rememberCoroutineScope()
+    val gridState = rememberLazyGridState()
+    val (appear, disappear) = rememberAppearTransition()
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnapFindSnackbarHost(snackbarHostState) },
+        floatingActionButton = {
+            // Mirrors Results: the bulk action lives in the corner, not in the
+            // app bar. A tall phone's hardest reach is its top edge, which is
+            // where this used to be.
+            when {
+                // Nothing to scroll and the form already fills the screen, so
+                // a button offering to take you to it would be pointing at
+                // itself.
+                state.history.isEmpty() -> Unit
+
+                selectionMode -> SnapFindFab(
+                    label = "Save ${state.selectedPhotoCount} to gallery",
+                    dimmed = state.operationInFlight,
+                    onClick = onDownloadJobs,
+                )
+
+                // The form's permanent way back. The form is free to scroll
+                // out of sight precisely because this is always here -- and
+                // unlike the dead summary row this replaces, it does
+                // something when tapped.
+                else -> SnapFindFab(
+                    label = "+ New Search",
+                    onClick = { scope.launch { gridState.animateScrollToItem(0) } },
+                )
+            }
+        },
         topBar = {
             UploadHeader(
                 selectionMode = selectionMode,
@@ -191,16 +242,6 @@ private fun UploadContent(
             )
         },
     ) { paddingValues ->
-        val processingState = state.matching as? MatchingState.Processing
-        if (processingState != null) {
-            MatchingProgress(
-                modifier = Modifier.padding(paddingValues),
-                state = processingState,
-                onCancel = onCancel,
-            )
-            return@Scaffold
-        }
-
         Column(modifier = Modifier.fillMaxSize().padding(paddingValues)) {
             // Outside the horizontal inset the rest of the screen sits in, so
             // the bar runs edge to edge directly under the app bar -- the same
@@ -209,81 +250,93 @@ private fun UploadContent(
             // rather than as the screen's current state.
             state.batchProgress?.let { BatchProgressBar(progress = it) }
 
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .padding(horizontal = SnapFindSpacing.screenHorizontal),
-            ) {
-                AnimatedVisibility(
-                    visible = !selectionMode,
-                    enter = fadeIn() + expandVertically(),
-                    exit = fadeOut() + shrinkVertically(),
+            if (state.history.isEmpty()) {
+                // No grid, so nothing to scroll and no lazy container needed:
+                // a plain Column with the empty state taking the slack. A lazy
+                // item asked to fill the viewport is the one thing lazy
+                // layouts handle badly, and there is no reason to ask.
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = SnapFindSpacing.screenHorizontal),
                 ) {
-                    Column {
-                        Spacer(modifier = Modifier.height(SnapFindSpacing.lg))
-                        UploadForm(
-                            selfieUri = state.selfieUri,
-                            archive = state.archive,
-                            onChooseSelfie = onChooseSelfie,
-                            onChooseZip = onChooseZip,
-                        )
-
-                        val error = state.matching as? MatchingState.Error
-                        if (error != null) {
-                            Spacer(modifier = Modifier.height(SnapFindSpacing.lg))
-                            Text(error.message, color = MaterialTheme.colorScheme.error)
-                        }
-
+                    PickForm(
+                        state = state,
+                        armed = armed,
+                        appear = appear,
+                        disappear = disappear,
+                        onChooseSelfie = onChooseSelfie,
+                        onChooseZip = onChooseZip,
+                        onSubmit = onSubmit,
+                    )
+                    EmptyUploadState(
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                        showChip = !armed,
+                    )
+                }
+            } else {
+                // One scrolling surface for the whole screen, which is the
+                // point of this layout. The form used to sit *outside* the
+                // grid in a fixed Column, so it never moved and the grid was
+                // left scrolling inside whatever space was left over -- on a
+                // short history, a small window beneath a large dead zone.
+                // Now the form scrolls away, the app bar goes with it, and the
+                // grid gets the screen.
+                LazyVerticalGrid(
+                    state = gridState,
+                    columns = GridCells.Fixed(2),
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(
+                        start = SnapFindSpacing.screenHorizontal,
+                        end = SnapFindSpacing.screenHorizontal,
+                        // Room for the FAB, which floats over this grid and
+                        // would otherwise sit on top of the last row of
+                        // cards. The same reserve the results grid keeps for
+                        // the same reason.
+                        bottom = SnapFindDimens.minTouchTarget + SnapFindSpacing.xxl,
+                    ),
+                    horizontalArrangement = Arrangement.spacedBy(SnapFindSpacing.grid),
+                    verticalArrangement = Arrangement.spacedBy(SnapFindSpacing.grid),
+                ) {
+                    // Present even while hidden, rather than conditional: an
+                    // item removed from a lazy list vanishes instantly, where
+                    // AnimatedVisibility inside a kept item still collapses it
+                    // on the spring.
+                    item(span = { GridItemSpan(maxLineSpan) }, key = "pick-form") {
                         AnimatedVisibility(
-                            visible = armed,
-                            enter = fadeIn() + expandVertically(),
-                            exit = fadeOut() + shrinkVertically(),
+                            visible = !selectionMode,
+                            enter = appear,
+                            exit = disappear,
                         ) {
-                            Column {
-                                Spacer(modifier = Modifier.height(SnapFindSpacing.lg))
-                                SnapFindButton(text = "Find My Photos", onClick = onSubmit)
-                                Spacer(modifier = Modifier.height(SnapFindSpacing.sm))
-                                SnapFindButtonSlot { PrivacyChip() }
-                            }
+                            PickForm(
+                                state = state,
+                                armed = armed,
+                                appear = appear,
+                                disappear = disappear,
+                                onChooseSelfie = onChooseSelfie,
+                                onChooseZip = onChooseZip,
+                                onSubmit = onSubmit,
+                            )
                         }
                     }
-                }
 
-                if (state.history.isNotEmpty()) {
-                    RecentJobsHeader(totalBytes = state.history.sumOf { it.sizeBytes })
-                }
-
-                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                    if (state.history.isEmpty()) {
-                        EmptyUploadState(modifier = Modifier.fillMaxSize(), showChip = !armed)
-                    } else {
-                        LazyVerticalGrid(
-                            columns = GridCells.Fixed(2),
-                            modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(top = SnapFindSpacing.sm, bottom = SnapFindSpacing.lg),
-                            horizontalArrangement = Arrangement.spacedBy(SnapFindSpacing.grid),
-                            verticalArrangement = Arrangement.spacedBy(SnapFindSpacing.grid),
-                        ) {
-                            items(state.history, key = { it.id }) { job ->
-                                JobHistoryCard(
-                                    job = job,
-                                    selectionMode = selectionMode,
-                                    isSelected = job.id in state.selectedJobs,
-                                    // The same reason the results grid does this:
-                                    // the app bar's actions are already disabled
-                                    // while a batch runs, and leaving the tiles
-                                    // live let a tap open a job that was being
-                                    // deleted, or change a selection that the
-                                    // batch's own cleanup then discarded.
-                                    enabled = !state.operationInFlight,
-                                    onClick = {
-                                        if (selectionMode) onToggleJobSelected(job.id) else onOpenJob(job.id)
-                                    },
-                                    onLongClick = { onToggleJobSelected(job.id) },
-                                )
-                            }
-                        }
+                    items(state.history, key = { it.id }) { job ->
+                        JobHistoryCard(
+                            job = job,
+                            selectionMode = selectionMode,
+                            isSelected = job.id in state.selectedJobs,
+                            // The same reason the results grid does this:
+                            // the app bar's actions are already disabled
+                            // while a batch runs, and leaving the tiles
+                            // live let a tap open a job that was being
+                            // deleted, or change a selection that the
+                            // batch's own cleanup then discarded.
+                            enabled = !state.operationInFlight,
+                            onClick = {
+                                if (selectionMode) onToggleJobSelected(job.id) else onOpenJob(job.id)
+                            },
+                            onLongClick = { onToggleJobSelected(job.id) },
+                        )
                     }
                 }
             }
@@ -307,19 +360,65 @@ private fun UploadContent(
 private fun DeleteJobsDialog(jobs: List<JobSummary>, onConfirm: () -> Unit, onDismiss: () -> Unit) {
     val photoCount = jobs.sumOf { it.matchCount }
     val freed = formatBytes(jobs.sumOf { it.sizeBytes })
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(if (jobs.size == 1) "Delete this job?" else "Delete ${jobs.size} jobs?") },
-        text = {
-            Text(
-                "This removes $photoCount matched photo${if (photoCount == 1) "" else "s"} " +
-                    "from the app, along with the record of what matched, and frees $freed.\n\n" +
-                    "Photos you've already saved to your gallery stay there."
-            )
-        },
-        confirmButton = { TextButton(onClick = onConfirm) { Text("Delete") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    SnapFindConfirmDialog(
+        title = if (jobs.size == 1) "Delete this job?" else "Delete ${jobs.size} jobs?",
+        // Copy unchanged from the hand-built dialog this replaces.
+        body = "This removes $photoCount matched photo${if (photoCount == 1) "" else "s"} " +
+            "from the app, along with the record of what matched, and frees $freed.\n\n" +
+            "Photos you've already saved to your gallery stay there.",
+        confirmLabel = "Delete",
+        onConfirm = onConfirm,
+        onDismiss = onDismiss,
     )
+}
+
+/**
+ * The two step rows, any error from the last run, and the primary action.
+ *
+ * Extracted because it is now placed twice: as a full-span item inside the
+ * grid when there is a history to scroll, and in a plain Column when there
+ * isn't. One definition, so the two paths cannot drift.
+ */
+@Composable
+private fun PickForm(
+    state: UploadScreenState,
+    armed: Boolean,
+    appear: EnterTransition,
+    disappear: ExitTransition,
+    onChooseSelfie: () -> Unit,
+    onChooseZip: () -> Unit,
+    onSubmit: () -> Unit,
+) {
+    Column {
+        Spacer(modifier = Modifier.height(SnapFindSpacing.lg))
+        UploadForm(
+            selfieUri = state.selfieUri,
+            archive = state.archive,
+            onChooseSelfie = onChooseSelfie,
+            onChooseZip = onChooseZip,
+        )
+
+        val error = state.matching as? MatchingState.Error
+        if (error != null) {
+            Spacer(modifier = Modifier.height(SnapFindSpacing.lg))
+            Text(error.message, color = MaterialTheme.colorScheme.error)
+        }
+
+        // The CTA arrives rather than sitting greyed out waiting -- a control
+        // that appears is a reward, one that has been grey for a minute is
+        // furniture. This is the one place the audit asked the motion to be
+        // spent, and it now spends the app's spring rather than Compose's
+        // default easing.
+        AnimatedVisibility(visible = armed, enter = appear, exit = disappear) {
+            Column {
+                Spacer(modifier = Modifier.height(SnapFindSpacing.lg))
+                SnapFindButton(text = "Find My Photos", onClick = onSubmit)
+                Spacer(modifier = Modifier.height(SnapFindSpacing.sm))
+                SnapFindButtonSlot { PrivacyChip() }
+            }
+        }
+        Spacer(modifier = Modifier.height(SnapFindSpacing.section))
+    }
 }
 
 @Composable
@@ -331,9 +430,12 @@ private fun UploadHeader(
     onDownloadSelected: () -> Unit,
     onDeleteSelected: () -> Unit,
 ) {
+    val (swapIn, swapOut) = rememberSwapTransition()
     AnimatedContent(
         targetState = selectionMode,
-        transitionSpec = { fadeIn() togetherWith fadeOut() },
+        // The one spring, like everything else that moves on this screen --
+        // and nothing at all when the user has turned animation off.
+        transitionSpec = { swapIn togetherWith swapOut },
         label = "upload-app-bar",
     ) { selecting ->
         if (selecting) {
@@ -350,13 +452,11 @@ private fun UploadHeader(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun UploadDefaultTopAppBar() {
     SnapFindTopAppBar(title = "SnapFind AI")
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun UploadSelectionTopAppBar(
     selectedCount: Int,
@@ -373,14 +473,9 @@ private fun UploadSelectionTopAppBar(
             }
         },
         actions = {
-            SnapFindButton(
-                text = "Download",
-                onClick = onDownloadSelected,
-                enabled = !operationInFlight,
-                variant = SnapFindButtonVariant.Tonal,
-                fillWidth = false,
-                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-            )
+            // Save is not here any more -- it is the corner FAB, the same
+            // place Results puts it. What stays is the destructive action,
+            // also like Results: delete sits far from the thumb on purpose.
             IconButton(onClick = onDeleteSelected, enabled = !operationInFlight) {
                 Icon(
                     Icons.Default.Delete,
@@ -460,6 +555,20 @@ private fun UploadForm(
                 }
             },
             onClick = onChooseZip,
+            // The sequence is enforced, not merely suggested. The design
+            // audit argued for "recessed but tappable -- guide the order,
+            // don't enforce it", and the cost asymmetry here decides against
+            // it: the archive is the expensive pick, often a long browse for
+            // a file of a few hundred megabytes, and a user who does that
+            // first only finds out afterwards that the cheap pick was
+            // required. Blocking the expensive step costs one extra tap;
+            // allowing it out of order costs a wasted browse.
+            //
+            // What the audit was right about is that a disabled control must
+            // not be a dead end. The dimming says "not yet" to anyone who can
+            // see it and [disabledReason] says it to anyone who can't.
+            enabled = hasSelfie,
+            disabledReason = "Unavailable until you add your selfie",
         )
     }
 }
@@ -472,15 +581,47 @@ private fun StepRow(
     subtitle: String,
     leading: @Composable () -> Unit,
     onClick: () -> Unit,
+    /**
+     * False for a step whose turn hasn't come. Reaches `Surface`'s own
+     * `enabled`, so the row stops taking taps *and* reports itself as disabled
+     * -- the same rule the photo tiles and the save FAB follow, for the same
+     * reason: a control dimmed only in colour still tells a screen reader it
+     * is actionable.
+     */
+    enabled: Boolean = true,
+    /** Said to a screen reader in place of the dimming a sighted user sees. */
+    disabledReason: String? = null,
 ) {
     Surface(
         onClick = onClick,
-        modifier = Modifier.fillMaxWidth().heightIn(min = SnapFindDimens.minTouchTarget),
+        enabled = enabled,
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = SnapFindDimens.minTouchTarget)
+            // The visible subtitle deliberately doesn't change when the step
+            // is unavailable -- it keeps describing what the step is for. That
+            // leaves a sighted user reading the dimming and a screen-reader
+            // user with nothing, so the reason goes in the semantics instead.
+            .let { base ->
+                if (!enabled && disabledReason != null) {
+                    base.semantics { stateDescription = disabledReason }
+                } else {
+                    base
+                }
+            },
         shape = ClayShapes.medium,
-        color = if (done) {
-            MaterialTheme.colorScheme.secondaryContainer
+        color = when {
+            done -> MaterialTheme.colorScheme.secondaryContainer
+            // The app's one disabled container, the same value
+            // SnapFindButton states explicitly rather than inheriting
+            // Material's cold-grey composite over warm clay.
+            !enabled -> MaterialTheme.colorScheme.surfaceContainerHighest
+            else -> MaterialTheme.colorScheme.surfaceContainerLow
+        },
+        contentColor = if (enabled) {
+            MaterialTheme.colorScheme.onSurface
         } else {
-            MaterialTheme.colorScheme.surfaceContainerLow
+            MaterialTheme.colorScheme.onSurfaceVariant
         },
         border = if (showBorder) {
             BorderStroke(SnapFindDimens.borderWidth, MaterialTheme.colorScheme.onPrimaryContainer)
@@ -590,35 +731,6 @@ private fun EmptyUploadState(modifier: Modifier = Modifier, showChip: Boolean) {
     }
 }
 
-@Composable
-private fun RecentJobsHeader(totalBytes: Long) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.background),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = SnapFindSpacing.md, bottom = SnapFindSpacing.xs),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                "Recent Jobs",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-            )
-            Text(
-                formatBytes(totalBytes),
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-        Spacer(modifier = Modifier.height(SnapFindSpacing.xs))
-    }
-}
 
 /**
  * What a batch over the selected jobs is doing.
@@ -685,6 +797,33 @@ private fun JobBatchProgress.label(): String = when (action) {
         } else {
             "Deleting..."
         }
+}
+
+/**
+ * The whole screen while a job runs: an app bar and the ring, and nothing
+ * else.
+ *
+ * Its own Scaffold on purpose. Sharing the upload screen's meant sharing every
+ * slot it declares, and a slot does not know that the content lambda decided
+ * to render something different -- which is how a floating action button
+ * ended up over a screen it had no business on.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MatchingScreen(
+    state: MatchingState.Processing,
+    onCancel: () -> Unit,
+) {
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = { SnapFindTopAppBar(title = "SnapFind AI") },
+    ) { padding ->
+        MatchingProgress(
+            modifier = Modifier.padding(padding),
+            state = state,
+            onCancel = onCancel,
+        )
+    }
 }
 
 @Composable

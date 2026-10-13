@@ -173,7 +173,7 @@ private fun ButtonPreviewContent() {
         SnapFindButton(text = "Get Started", onClick = {})
         SnapFindButton(text = "Cancel", onClick = {}, variant = SnapFindButtonVariant.Tonal)
         SnapFindButton(text = "Find My Photos", onClick = {}, variant = SnapFindButtonVariant.Outlined)
-        SnapFindButton(text = "Download", onClick = {}, variant = SnapFindButtonVariant.Tonal, fillWidth = false)
+        SnapFindButton(text = "Cancel", onClick = {}, variant = SnapFindButtonVariant.Tonal, fillWidth = false)
         SnapFindButton(text = "Disabled", onClick = {}, enabled = false)
         SnapFindButton(text = "Choose selfie", onClick = {},variant = SnapFindButtonVariant.Tonal, enabled = true)
 

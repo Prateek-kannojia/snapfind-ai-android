@@ -1,10 +1,17 @@
 package com.example.snapfindai.ui.theme
 
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.SpringSpec
 import androidx.compose.animation.core.VisibilityThreshold
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntSize
 
 /**
  * The app's motion, in one place for the same reason colour and spacing are.
@@ -14,14 +21,14 @@ import androidx.compose.ui.unit.Dp
  * curve. A spring expresses that directly, and expressing it once means a
  * second animated control can't arrive with its own bounce.
  *
- * Deliberately one spec, not a set. There is exactly one kind of movement in
- * the app so far (a control responding to a touch), and a scale of specs
- * nobody has a use for yet would be tokens invented ahead of their need --
- * the thing [SnapFindDimens] exists to argue against.
+ * One spring, in the three typings Compose needs for it, plus the two
+ * transitions built from it. The typings exist because `animateFloatAsState`,
+ * `animateDpAsState` and `AnimatedVisibility` each want the spec typed to what
+ * they animate -- not because there are three kinds of movement.
  */
 object SnapFindMotion {
-    // The one spring's parameters, named once. Two typings of the same spring
-    // follow, and stating the numbers twice is how they drift apart.
+    // The one spring's parameters, named once. Three typings of the same
+    // spring follow, and stating the numbers each time is how they drift.
     private const val PressDampingRatio = 0.72f
     private val PressStiffness = Spring.StiffnessMediumLow
 
@@ -56,4 +63,48 @@ object SnapFindMotion {
         stiffness = PressStiffness,
         visibilityThreshold = Dp.VisibilityThreshold,
     )
+
+    /** The same spring again, for the size change an [appear]/[disappear] pair animates. */
+    private val pressIntSize: SpringSpec<IntSize> = spring(
+        dampingRatio = PressDampingRatio,
+        stiffness = PressStiffness,
+        visibilityThreshold = IntSize.VisibilityThreshold,
+    )
+
+    /**
+     * Something arriving on screen, and leaving it: a fade carried on the same
+     * spring as the height change, so the two read as one movement.
+     *
+     * Defined here rather than at each call site, which is what they were.
+     * Three `AnimatedVisibility` blocks on the upload screen each wrote
+     * `fadeIn() + expandVertically()` inline with no spec at all, so all three
+     * ran on Compose's default tween while this file claimed the app had one
+     * motion language -- "a second animated control can't arrive with its own
+     * bounce" was exactly what had happened, three times, with Compose's
+     * easing instead of a bounce. Four inline spec expressions also had to be
+     * kept in step by hand.
+     *
+     * These are the places the motion is spent: the step form leaving as
+     * selection mode begins, and the primary action appearing once both steps
+     * are satisfied. A control that *arrives* is a reward; the spring is what
+     * makes it feel like one.
+     */
+    val appear: EnterTransition = fadeIn(press) + expandVertically(pressIntSize)
+    val disappear: ExitTransition = fadeOut(press) + shrinkVertically(pressIntSize)
+
+    /**
+     * One thing swapping for another of the same size -- the app bar changing
+     * between its title and its selection mode.
+     *
+     * A fade with no height change, because nothing changes height: the two
+     * bars occupy the same box. That is why this isn't [appear] with its
+     * `expandVertically`, and it is the distinction worth keeping -- content
+     * *arriving* grows into place, content being *replaced* crossfades. Two
+     * transitions for two genuinely different events, on the one spring.
+     *
+     * Previously `fadeIn() togetherWith fadeOut()` with no spec, so the bar
+     * crossfaded on Compose's default easing while the form beside it sprang.
+     */
+    val swapIn: EnterTransition = fadeIn(press)
+    val swapOut: ExitTransition = fadeOut(press)
 }

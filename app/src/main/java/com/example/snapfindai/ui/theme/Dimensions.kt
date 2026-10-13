@@ -43,6 +43,24 @@ object SnapFindDimens {
     val toolbarIcon = 28.dp
     /** The wavy progress ring's stroke. Material's own default is thin enough that the scallops read as a hairline next to the bold figure inside the ring; this is the weight that matches it. */
     val progressStroke = 7.dp
-    /** Shared across every raised surface (buttons, photo cards, the onboarding sheet) so they all read as the same amount "off the page" -- Material 3's own Level2 elevation token (3dp), not a number picked to match one screenshot. */
+    /** Shared across every raised surface (buttons, photo cards) so they all read as the same amount "off the page" -- Material 3's own Level2 elevation token (3dp), not a number picked to match one screenshot. */
     val elevation = 3.dp
+
+    /**
+     * The onboarding sheet's lift -- Material 3's Level4, deliberately more
+     * than [elevation]'s Level2.
+     *
+     * Two reasons it can't share the card token. A 3dp spread reads fine
+     * under something a couple of fingers wide and all but disappears along a
+     * full-width edge, which is the only edge this sheet shows. And the sheet
+     * is the one surface in the app that *covers* the page rather than sitting
+     * on it, so it is the one thing that should read as hovering.
+     *
+     * The shadow is also load-bearing here rather than decorative: the sheet
+     * and the page behind it are one step apart in the clay ramp (about
+     * 1.1:1), so the separation is carried by lift, not by colour. It
+     * replaced a hairline border that was doing that job with a hard edge, on
+     * a theme whose premise is that nothing has one.
+     */
+    val sheetElevation = 8.dp
 }

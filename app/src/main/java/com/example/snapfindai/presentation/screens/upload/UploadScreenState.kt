@@ -122,6 +122,17 @@ data class UploadScreenState(
     /** Derived, not stored: an empty selection *is* "not selecting", so the two cannot disagree. */
     val selectionMode: Boolean get() = selectedJobs.isNotEmpty()
 
+    /**
+     * How many photos the selected jobs hold between them -- what a Save
+     * would actually write to the gallery.
+     *
+     * Distinct from `selectedJobs.size`, which is what the app bar's title
+     * counts, because the user selects *jobs* and the action works on the
+     * *photos* inside them. The bar says both: "3 selected" over "Save 17".
+     */
+    val selectedPhotoCount: Int
+        get() = history.filter { it.id in selectedJobs }.sumOf { it.matchCount }
+
     /** Both inputs are present, so the job can actually be started. */
     val armed: Boolean get() = selfieUri != null && archive != null
 }

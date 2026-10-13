@@ -3,22 +3,23 @@ package com.example.snapfindai.presentation.screens.viewer
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material3.*
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.FloatingToolbarDefaults
-import androidx.compose.material3.HorizontalFloatingToolbar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -44,8 +45,11 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.example.snapfindai.domain.model.FaceMatchResult
+import com.example.snapfindai.presentation.components.SnapFindButton
+import com.example.snapfindai.presentation.components.SnapFindConfirmDialog
 import com.example.snapfindai.presentation.components.SnapFindSnackbarHost
 import com.example.snapfindai.presentation.util.rememberGallerySaveGate
+import com.example.snapfindai.ui.theme.ClayTertiaryDark
 import com.example.snapfindai.ui.theme.SnapFindDimens
 import com.example.snapfindai.ui.theme.SnapFindSpacing
 import java.io.File
@@ -137,15 +141,23 @@ private fun LoadedPhotoViewer(
     Scaffold(
         snackbarHost = { SnapFindSnackbarHost(snackbarHostState) },
         topBar = {
-            // Title and back only. The actions moved to the toolbar below,
-            // where a thumb reaches them -- on a full-screen photo the far
-            // top corner is the worst place to put the two things you do
-            // most.
+            // Back, the position, and whether this photo is already in the
+            // gallery. The two *actions* live at the bottom where a thumb
+            // reaches them; what belongs up here is the one piece of state the
+            // screen exists to report. "1 / 21" used to be the only thing on
+            // screen -- the grid behind showed a tick for a saved photo and
+            // the viewer dropped it, so the question the user opened this
+            // screen to answer was the one thing it didn't answer.
             TopAppBar(
                 title = { Text("${pagerState.currentPage + 1} / ${photos.size}") },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
+                    }
+                },
+                actions = {
+                    if (current?.savedAt != null) {
+                        SavedBadge()
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -246,21 +258,19 @@ private fun LoadedPhotoViewer(
     }
 
     if (confirmingRemove && current != null) {
-        AlertDialog(
-            onDismissRequest = { confirmingRemove = false },
-            title = { Text("Remove from matches?") },
+        SnapFindConfirmDialog(
+            title = "Remove from matches?",
             // Spelled out because the action is easy to read as "delete this
-            // photo", which is the one thing it doesn't do.
-            text = { Text("This takes the photo out of these results. Your own copy stays where it is, including anything already saved to your gallery.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    confirmingRemove = false
-                    onRemove(current)
-                }) { Text("Remove") }
+            // photo", which is the one thing it doesn't do. Copy unchanged
+            // from the hand-built dialog this replaces.
+            body = "This takes the photo out of these results. Your own copy stays " +
+                "where it is, including anything already saved to your gallery.",
+            confirmLabel = "Delete",
+            onConfirm = {
+                confirmingRemove = false
+                onRemove(current)
             },
-            dismissButton = {
-                TextButton(onClick = { confirmingRemove = false }) { Text("Cancel") }
-            },
+            onDismiss = { confirmingRemove = false },
         )
     }
 }
@@ -284,19 +294,18 @@ private const val DOUBLE_TAP_SCALE = 2.5f
  * The viewer's two actions, laid over the photo rather than handed to
  * Scaffold's floating-action-button slot.
  *
- * That slot is for a FAB, and Scaffold treats whatever is in it like one:
- * it owns the placement, re-measures it against the bar and snackbar, and
- * animates it when its content changes size. A toolbar whose first action
- * swaps between a button and a progress ring changes size on every tap,
- * which is what made it appear to shift shape when download or delete was
- * pressed. Placed in the content, its position and size are this screen's
- * and nothing re-lays them out.
+ * That slot is for a FAB, and Scaffold treats whatever is in it like one: it
+ * owns the placement and re-measures it against the bar and the snackbar.
+ * Placed in the content, the row's position is this screen's own and nothing
+ * re-lays it out.
  *
- * Both actions are drawn at the same fixed footprint for the same reason --
- * the ring that replaces the save button mid-save occupies exactly what the
- * button did, so the toolbar is the same width before, during and after.
+ * Save takes the weighted share of the row and Delete stays a fixed-size
+ * circle at the end, rather than two compact controls with a gap of unused
+ * photo between them -- the save action is the one thing this screen is
+ * mostly for, so it gets the room. They stay at opposite edges, which is what
+ * keeps a destructive glyph from sitting adjacent to the one that puts a
+ * photo in the gallery.
  */
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun ViewerActions(
     current: FaceMatchResult,
@@ -305,56 +314,86 @@ private fun ViewerActions(
     onRemove: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    // The app's own surface rather than the viewer's black: the toolbar is a
-    // piece of the app laid over a photo, not part of the photo. Everything
-    // else on this screen is deliberately black to get out of the image's
-    // way; this is the one thing that should not disappear into it.
-    HorizontalFloatingToolbar(
-        modifier = modifier,
-        expanded = true,
-        colors = FloatingToolbarDefaults.standardFloatingToolbarColors(
-            toolbarContainerColor = MaterialTheme.colorScheme.background,
-            toolbarContentColor = MaterialTheme.colorScheme.onBackground,
-        ),
+    val saving = savingPhoto == current.photo
+    Row(
+        modifier = modifier.fillMaxWidth().padding(horizontal = SnapFindSpacing.screenHorizontal),
+        horizontalArrangement = Arrangement.spacedBy(SnapFindSpacing.md),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        // One button that never swaps for something else. It used to become a
-        // wavy progress ring mid-save, and a ring measures taller than an
-        // icon, so the toolbar grew and shrank on every tap. Saving shows as
-        // the button going inert instead; the snackbar reports the outcome.
-        val saving = savingPhoto == current.photo
-        IconButton(
+        // SnapFindButton rather than SnapFindFab: a FAB is sized to its own
+        // label by design, which is correct for a grid's one bulk action but
+        // left this single-photo save as a small pill with most of the row
+        // empty beside it. SnapFindButton's own width.weight(1f) here is the
+        // same "fill what you're given, capped at buttonMaxWidth" rule every
+        // other primary button in the app already follows -- not a size
+        // picked for this screen, the existing one.
+        //
+        // Saving shows as the button going inert and saying so, rather than
+        // swapping for a spinner. A progress ring measures taller than a
+        // label, and the toolbar used to grow and shrink on every tap because
+        // of it.
+        SnapFindButton(
+            text = when {
+                saving -> "Saving..."
+                // Stays offered once saved: the user may have deleted the
+                // gallery copy since, and re-saving is a no-op when they
+                // haven't. The top bar already says it is saved, so the
+                // button says what tapping it would do instead of repeating.
+                current.savedAt != null -> "Save again"
+                else -> "Save to gallery"
+            },
             onClick = { onSave(current) },
-            // Stays tappable once saved: the user may have deleted the
-            // gallery copy since, and re-saving is a no-op when they haven't.
             enabled = !saving,
-            modifier = Modifier.size(SnapFindDimens.toolbarAction),
-        ) {
-            Icon(
-                if (current.savedAt != null) Icons.Default.CheckCircle else Icons.Default.FileDownload,
-                contentDescription = when {
-                    saving -> "Saving to gallery"
-                    current.savedAt != null -> "Saved to gallery, tap to save again"
-                    else -> "Save to gallery"
-                },
-                tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                modifier = Modifier.size(SnapFindDimens.toolbarIcon),
-            )
-        }
+            modifier = Modifier.weight(1f),
+        )
+
+        // errorContainer rather than error: this icon only opens the
+        // confirmation below, it isn't itself the destructive act, so it
+        // carries the softer of the two reds. The dialog's own confirm
+        // button is full-strength error -- that's the moment the colour
+        // should say "this is about to happen," not before it.
         IconButton(
             onClick = onRemove,
-            modifier = Modifier.size(SnapFindDimens.toolbarAction),
+            modifier = Modifier
+                .size(SnapFindDimens.toolbarAction)
+                .background(MaterialTheme.colorScheme.errorContainer, CircleShape),
         ) {
-            // The same bin the selection bars use. It was a remove-circle to
-            // mark that this takes the photo out of the results without
-            // touching the user's own copy, but a distinction drawn only in
-            // an icon, on the one screen that draws it differently, teaches
-            // nobody. The confirmation says it in words.
             Icon(
                 Icons.Default.Delete,
                 contentDescription = "Remove from matches",
-                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                tint = MaterialTheme.colorScheme.onErrorContainer,
                 modifier = Modifier.size(SnapFindDimens.toolbarIcon),
             )
         }
     }
 }
+
+/**
+ * "Saved" in the viewer's top bar, in the palette's sage.
+ *
+ * Sage because it is the app's "this is done" colour, the same one the grid's
+ * saved badge uses -- and the *dark*-theme sage specifically, because this bar
+ * is black in both themes: `#93AD9C` measures 8.70:1 on black where the light
+ * sage manages 4.76:1.
+ */
+@Composable
+private fun SavedBadge() {
+    Row(
+        modifier = Modifier.padding(end = SnapFindSpacing.md),
+        horizontalArrangement = Arrangement.spacedBy(SnapFindSpacing.xs),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Default.DownloadDone,
+            contentDescription = null,
+            tint = ClayTertiaryDark,
+            modifier = Modifier.size(SnapFindDimens.badgeGlyph),
+        )
+        Text(
+            "Saved",
+            style = MaterialTheme.typography.labelMedium,
+            color = ClayTertiaryDark,
+        )
+    }
+}
+

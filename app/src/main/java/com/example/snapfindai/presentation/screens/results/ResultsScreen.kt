@@ -40,6 +40,8 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.example.snapfindai.domain.model.FaceMatchResult
+import com.example.snapfindai.presentation.components.SnapFindConfirmDialog
+import com.example.snapfindai.presentation.components.SnapFindFab
 import com.example.snapfindai.presentation.util.Thumbnail
 import com.example.snapfindai.presentation.components.SnapFindMark
 import com.example.snapfindai.presentation.components.SnapFindMarkState
@@ -148,6 +150,7 @@ private fun ResultsContent(
     val selectionMode = loaded?.selectionMode == true
     val selectedCount = loaded?.selectedPhotos?.size ?: 0
     val hasMatches = loaded != null && loaded.matches.isNotEmpty()
+    var confirmingRemove by rememberSaveable { mutableStateOf(false) }
 
     BackHandler(enabled = selectionMode) { onClearSelection() }
 
@@ -161,7 +164,7 @@ private fun ResultsContent(
                 operationInFlight = loaded?.operationInFlight == true,
                 onBack = onNavigateBack,
                 onClearSelection = onClearSelection,
-                onRemoveSelected = onRemoveSelected,
+                onRemoveSelected = { confirmingRemove = true },
             )
         },
         floatingActionButton = {
@@ -262,6 +265,24 @@ private fun ResultsContent(
             }
         }
     }
+
+    if (confirmingRemove) {
+        SnapFindConfirmDialog(
+            title = if (selectedCount == 1) {
+                "Remove this photo from matches?"
+            } else {
+                "Remove $selectedCount photos from matches?"
+            },
+            body = "This takes ${if (selectedCount == 1) "it" else "them"} out of these results. " +
+                "Your own copy stays where it is, including anything already saved to your gallery.",
+            confirmLabel = "Delete",
+            onConfirm = {
+                confirmingRemove = false
+                onRemoveSelected()
+            },
+            onDismiss = { confirmingRemove = false },
+        )
+    }
 }
 
 private fun resultsSummary(state: ResultsUiState.Loaded): String = buildString {
@@ -309,55 +330,17 @@ private fun ResultsFab(
 ) {
     if (!hasMatches) return
     when {
-        selectionMode -> SaveFab(
+        selectionMode -> SnapFindFab(
             label = "Save $selectedCount to gallery",
             dimmed = operationInFlight,
             onClick = onSaveSelected,
         )
         notSavedCount == 0 -> AllSavedChip()
-        else -> SaveFab(
+        else -> SnapFindFab(
             label = "Save $notSavedCount to gallery",
             dimmed = operationInFlight,
             onClick = onSaveAll,
         )
-    }
-}
-
-/**
- * The bulk save action. [dimmed] while a batch is already running, when it is
- * drawn muted and does nothing.
- *
- * `ExtendedFloatingActionButton` has no `enabled` parameter -- a FAB is meant
- * to be the screen's one always-available action, so Material doesn't offer
- * one -- and dropping the tap inside `onClick` left a control that *looked*
- * disabled while still telling every screen reader it was actionable. Someone
- * who can't see the muted colour got a button that reports itself as
- * available and silently does nothing, which is worse than either state
- * honestly rendered. `disabled()` states it in the semantics tree, so the two
- * descriptions of this control finally agree.
- *
- * The ripple on touch stays, and is a Material limitation rather than a
- * decision: a FAB's indication is wired to its own interaction source and
- * can't be suppressed from outside. It is the lesser half of the problem --
- * the tap is still ignored and now correctly announced.
- */
-@Composable
-private fun SaveFab(label: String, dimmed: Boolean, onClick: () -> Unit) {
-    ExtendedFloatingActionButton(
-        onClick = { if (!dimmed) onClick() },
-        modifier = if (dimmed) Modifier.semantics { disabled() } else Modifier,
-        containerColor = if (dimmed) {
-            MaterialTheme.colorScheme.surfaceContainerHighest
-        } else {
-            MaterialTheme.colorScheme.primary
-        },
-        contentColor = if (dimmed) {
-            MaterialTheme.colorScheme.onSurfaceVariant
-        } else {
-            MaterialTheme.colorScheme.onPrimary
-        },
-    ) {
-        Text(label)
     }
 }
 
