@@ -53,7 +53,7 @@ Kotlin · Jetpack Compose (Material 3, expressive progress indicators) · Hilt (
 ## Project structure
 
 ```
-app/src/main/java/com/example/snapfindai/
+app/src/main/java/com/quantumweavers/snapfindai/
 ├── di/            # Hilt modules
 ├── data/          # repository implementations (active: on-device, Room, MediaStore; dormant: Retrofit)
 ├── domain/        # repository interfaces, domain models, use cases

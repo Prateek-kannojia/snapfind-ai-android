@@ -1,0 +1,97 @@
+package com.quantumweavers.snapfindai.presentation.screens.results
+
+import android.net.Uri
+import com.quantumweavers.snapfindai.domain.model.FaceMatchResult
+import java.io.File
+
+sealed interface ResultsUiState {
+    object Loading : ResultsUiState
+
+    /**
+     * Loading the job failed -- a database or MediaStore read threw. Distinct
+     * from a Loaded state with no matches, which is a successful "nothing
+     * matched"; this is "we don't know what you have". Without it the throw
+     * was unhandled and took the app down.
+     */
+    data class Error(val message: String) : ResultsUiState
+    data class Loaded(
+        /**
+         * Null when there is no job to show -- a fresh install, or history
+         * emptied while this screen was open. It was `-1L` in that case: a
+         * sentinel standing for "absent" in a type that can't say so, which
+         * only went unnoticed because its single consumer (opening the
+         * viewer) sits behind a non-empty match list and so never saw it.
+         * Nullable states the same fact in a form the compiler checks.
+         */
+        val jobId: Long?,
+        val matches: List<MatchItemState>,
+        val scannedCount: Int = 0,
+        val selectedPhotos: Set<File> = emptySet(),
+        /** Non-null while a batch (download-all / download-selected) save is running. */
+        val batchProgress: BatchProgress? = null,
+        /**
+         * True while a save or a removal is running. Saving and removing both
+         * mutate the same photos on disk, so letting a second one start means
+         * two batches fighting over one progress counter, or files being
+         * deleted while they're mid-copy into the gallery. Double-tapping a
+         * button is ordinary behaviour, so this is the normal case, not an
+         * edge one.
+         *
+         * Distinct from [batchProgress], which only covers saves and only
+         * exists to drive the progress bar.
+         */
+        val operationInFlight: Boolean = false,
+    ) : ResultsUiState {
+        /** Derived, not stored -- deselecting the last photo automatically drops you back to normal browsing, same as Photos/Gmail/Drive, instead of leaving an empty-but-still-"selecting" state behind. */
+        val selectionMode: Boolean get() = selectedPhotos.isNotEmpty()
+
+        /**
+         * What the bulk download button promises. Saving is idempotent, so
+         * the button can act on every match regardless -- this number only
+         * has to describe the outcome the user will actually see, which is
+         * how many photos will newly land in their gallery.
+         */
+        val notSavedCount: Int get() = matches.count { it.saveStatus != SaveStatus.Saved }
+        val savedCount: Int get() = matches.size - notSavedCount
+    }
+}
+
+data class MatchItemState(val match: FaceMatchResult, val saveStatus: SaveStatus)
+
+sealed interface SaveStatus {
+    object Idle : SaveStatus
+    object Saving : SaveStatus
+    object Saved : SaveStatus
+    data class Failed(val message: String) : SaveStatus
+}
+
+data class BatchProgress(val completed: Int, val total: Int)
+
+/** One-shot events the UI reacts to once (snackbar, notification) -- not part of uiState, so they don't re-fire on recomposition/config change. */
+sealed interface ResultsEvent {
+    /**
+     * [skippedCount] were already in the gallery and were left alone, so the
+     * message can stay truthful about what actually changed instead of
+     * claiming to have saved photos that were already there.
+     *
+     * [lastSavedUri] is the most recently saved photo's gallery Uri, when
+     * available -- used as the notification's tap target.
+     */
+    data class BatchSaveCompleted(
+        val savedCount: Int,
+        val skippedCount: Int,
+        val failedCount: Int,
+        val lastSavedUri: Uri?,
+    ) : ResultsEvent
+
+    /**
+     * Something the user asked for didn't happen, in one sentence written for
+     * them -- never an exception's own text. See `UserFacingException`.
+     *
+     * Separate from [ResultsUiState.Error], which replaces the whole screen:
+     * a removal that fails leaves a perfectly good list of matches on screen,
+     * and the only thing missing is an explanation of why they're all still
+     * there.
+     */
+    data class Message(val text: String) : ResultsEvent
+}

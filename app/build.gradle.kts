@@ -7,11 +7,16 @@ plugins {
 }
 
 android {
-    namespace = "com.example.snapfindai"
+    namespace = "com.quantumweavers.snapfindai"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.example.snapfindai"
+        // Permanent: Play never lets a published package name change, and never
+        // lets it be reused by another app either, so this was settled before
+        // the first upload rather than after it. Kept identical to `namespace`
+        // above -- they are independent settings, but letting the app's identity
+        // on Play and its Kotlin source tree disagree only invites confusion.
+        applicationId = "com.quantumweavers.snapfindai"
         minSdk = 24
         targetSdk = 36
         versionCode = 1

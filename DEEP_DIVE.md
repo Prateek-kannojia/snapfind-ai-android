@@ -570,7 +570,7 @@ The backend's FastAPI endpoint receives this as an `UploadFile` with `field_name
 
 ```
 SnapFindAI/                             # this Gradle project
-├── app/src/main/java/com/example/snapfindai/
+├── app/src/main/java/com/quantumweavers/snapfindai/
 │   ├── di/
 │   │   ├── FaceMatchModule.kt        # Binds OnDeviceFaceMatchRepositoryImpl (ACTIVE)
 │   │   ├── NetworkModule.kt          # Retrofit/SnapFindApi/base URL (dormant path)
