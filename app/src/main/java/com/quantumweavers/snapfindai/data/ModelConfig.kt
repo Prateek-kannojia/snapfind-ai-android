@@ -9,8 +9,20 @@ package com.quantumweavers.snapfindai.data
  * place so the two can never drift to different URLs or checksums.
  */
 internal object ModelConfig {
+    // The FaceCore-Android repo, not the app's own. The app repo is going
+    // private, and a private repo serves no release assets at all -- every
+    // fresh install would fail at onboarding with no way to fix it short of a
+    // Play update. This has to point somewhere that stays public.
+    //
+    // The last path segment is the release's *tag*, not its title -- a release
+    // titled "model-v1" tagged FaceCore_Models_v1 is only reachable under the
+    // tag, and getting that wrong is a 404 that only shows up on a first run.
+    //
+    // Treat the tag as immutable. Deleting or renaming it breaks first run for
+    // every install that has not already cached the files, and the fix is a
+    // Play update with its review wait, not a server-side change.
     private const val MODEL_RELEASE_BASE =
-        "https://github.com/Prateek-kannojia/snapfind-ai-android/releases/download/models-v1"
+        "https://github.com/Prateek-kannojia/FaceCore-Android/releases/download/FaceCore_Models_v1"
 
     const val DETECTOR_MODEL_FILE_NAME = "det_500m.onnx"
     const val EMBEDDER_MODEL_FILE_NAME = "w600k_mbf.onnx"
