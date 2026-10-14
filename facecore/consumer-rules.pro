@@ -14,7 +14,7 @@
 # consumer serializes FaceMatchResult-like data). Kept so a minified host
 # app doesn't rename anything this module or its callers refer to across
 # the library boundary.
--keep interface com.example.snapfindai.facecore.api.** { *; }
--keep class com.example.snapfindai.facecore.api.** { *; }
--keep class com.example.snapfindai.facecore.model.** { *; }
--keep class com.example.snapfindai.facecore.FaceMatchEngine { *; }
+-keep interface io.github.prateekkannojia.facecore.api.** { *; }
+-keep class io.github.prateekkannojia.facecore.api.** { *; }
+-keep class io.github.prateekkannojia.facecore.model.** { *; }
+-keep class io.github.prateekkannojia.facecore.FaceMatchEngine { *; }

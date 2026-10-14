@@ -620,7 +620,7 @@ SnapFindAI/                             # this Gradle project
 │
 └── facecore/                          # standalone module, no Compose/Hilt/Retrofit deps
     ├── src/debug/assets/models/      # bundled models -- debug builds only (see Model distribution)
-    └── src/main/java/com/example/snapfindai/facecore/
+    └── src/main/java/io/github/prateekkannojia/facecore/
         ├── api/                      # FaceDetector, FaceEmbedder, FaceDetectorConfig — interfaces + config
         ├── detector/                 # ScrfdFaceDetector + ScrfdPostprocess (the one impl)
         ├── embedder/                 # OnnxFaceEmbedder (the one impl)

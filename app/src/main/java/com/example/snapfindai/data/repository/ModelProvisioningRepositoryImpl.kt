@@ -3,7 +3,7 @@ package com.example.snapfindai.data.repository
 import android.content.Context
 import com.example.snapfindai.data.ModelConfig
 import com.example.snapfindai.domain.repository.ModelProvisioningRepository
-import com.example.snapfindai.facecore.ModelDownloader
+import io.github.prateekkannojia.facecore.ModelDownloader
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton

@@ -6,8 +6,8 @@ import com.example.snapfindai.domain.model.PhotoMatch
 import com.example.snapfindai.domain.model.UserFacingException
 import com.example.snapfindai.domain.repository.FaceMatchRepository
 import com.example.snapfindai.domain.repository.JobHistoryRepository
-import com.example.snapfindai.facecore.FaceMatcher
-import com.example.snapfindai.facecore.NoFaceDetectedException
+import io.github.prateekkannojia.facecore.FaceMatcher
+import io.github.prateekkannojia.facecore.NoFaceDetectedException
 import com.example.snapfindai.utils.FileHelper
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers

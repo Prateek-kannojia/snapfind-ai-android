@@ -12,7 +12,7 @@ import androidx.work.workDataOf
 import com.example.snapfindai.domain.model.UserFacingException
 import com.example.snapfindai.domain.repository.JobHistoryRepository
 import com.example.snapfindai.domain.usecase.FindFacesInPhotosUseCase
-import com.example.snapfindai.facecore.FaceMatcher
+import io.github.prateekkannojia.facecore.FaceMatcher
 import com.example.snapfindai.utils.FileHelper
 import com.example.snapfindai.utils.MatchingNotifications
 import dagger.assisted.Assisted

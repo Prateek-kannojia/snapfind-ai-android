@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.snapfindai.facecore"
+    namespace = "io.github.prateekkannojia.facecore"
     compileSdk = 36
 
     defaultConfig {
