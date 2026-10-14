@@ -1,6 +1,6 @@
-package com.example.snapfindai.facesdk
+package com.example.snapfindai.facecore
 
-import com.example.snapfindai.facesdk.model.FaceEmbedding
+import com.example.snapfindai.facecore.model.FaceEmbedding
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue

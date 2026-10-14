@@ -1,6 +1,6 @@
-package com.example.snapfindai.facesdk.detector
+package com.example.snapfindai.facecore.detector
 
-import com.example.snapfindai.facesdk.InvalidModelException
+import com.example.snapfindai.facecore.InvalidModelException
 import org.junit.Assert.assertThrows
 import org.junit.Test
 

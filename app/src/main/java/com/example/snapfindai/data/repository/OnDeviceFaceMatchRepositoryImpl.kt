@@ -7,13 +7,13 @@ import com.example.snapfindai.domain.model.EventPhoto
 import com.example.snapfindai.domain.model.PhotoMatch
 import com.example.snapfindai.domain.repository.FaceMatchRepository
 import com.example.snapfindai.domain.repository.PreparedSelfie
-import com.example.snapfindai.facesdk.BitmapDecoder
-import com.example.snapfindai.facesdk.FaceMatchEngine
-import com.example.snapfindai.facesdk.FaceMatcher
-import com.example.snapfindai.facesdk.ModelDownloader
-import com.example.snapfindai.facesdk.api.FaceDetector
-import com.example.snapfindai.facesdk.api.FaceEmbedder
-import com.example.snapfindai.facesdk.model.FaceEmbedding
+import com.example.snapfindai.facecore.BitmapDecoder
+import com.example.snapfindai.facecore.FaceMatchEngine
+import com.example.snapfindai.facecore.FaceMatcher
+import com.example.snapfindai.facecore.ModelDownloader
+import com.example.snapfindai.facecore.api.FaceDetector
+import com.example.snapfindai.facecore.api.FaceEmbedder
+import com.example.snapfindai.facecore.model.FaceEmbedding
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -27,11 +27,11 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Runs matching entirely on-device via facesdk. Event photos are decoded
+ * Runs matching entirely on-device via facecore. Event photos are decoded
  * and scored ONE AT A TIME, not batch-decoded into a list first: a job's
  * photos can be dozens of full-resolution phone photos, and holding them
  * all as decoded Bitmaps simultaneously risks OOM on a real device. This
- * is exactly the case facesdk's lower-level embedSelfie()/scoreEventPhoto()
+ * is exactly the case facecore's lower-level embedSelfie()/scoreEventPhoto()
  * primitives exist for, instead of the matchJob() convenience batch call.
  */
 @Singleton
@@ -42,7 +42,7 @@ class OnDeviceFaceMatchRepositoryImpl @Inject constructor(
     private val engineMutex = Mutex()
     @Volatile private var engine: FaceMatchEngine? = null
 
-    // Debug builds bundle the models as facesdk/src/debug/assets/models/ for
+    // Debug builds bundle the models as facecore/src/debug/assets/models/ for
     // fast local iteration; release builds have no bundled models at all
     // (so the APK isn't ~16MB heavier for every install). Normally the
     // onboarding flow (see ModelProvisioningRepositoryImpl) has already
@@ -72,7 +72,7 @@ class OnDeviceFaceMatchRepositoryImpl @Inject constructor(
      * it means a decode, a detection, an alignment and an embedder pass, and
      * carrying it to [matchPhotos] is what stops all of that happening twice
      * per job. Private, so nothing outside this file can build one or unwrap
-     * one: facesdk's types stay out of the domain layer.
+     * one: facecore's types stay out of the domain layer.
      */
     private class EmbeddedSelfie(val embedding: FaceEmbedding) : PreparedSelfie
 
@@ -89,7 +89,7 @@ class OnDeviceFaceMatchRepositoryImpl @Inject constructor(
 
     // Dispatchers.Default, not IO: the expensive parts here are full-resolution
     // bitmap decoding and the rotation copy, which are CPU and allocation
-    // bound. facesdk's detect/embed already hop to Default themselves; before
+    // bound. facecore's detect/embed already hop to Default themselves; before
     // this, every decode ran on whatever thread the caller was on -- which was
     // the main thread, and froze the app for the length of the job.
     override suspend fun matchPhotos(

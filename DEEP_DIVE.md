@@ -2,7 +2,7 @@
 
 An Android app that lets you find yourself in a batch of event photos. You pick a selfie and a ZIP archive of event photos, and the app matches faces **entirely on-device** — no upload, no network call, no server in the loop.
 
-That wasn't the original design. The app was first built against a backend (`../Face_recognition/`, its own README covers the ML pipeline and API) that uploads photos, matches server-side, and polls for results. As of 2026-09-27, matching has moved fully on-device, backed by a validated on-device SDK (`:facesdk`, its own Gradle module in this repo) built and proven against that same backend across three separate phases — detection, alignment, then end-to-end match decisions — each checked against the server's real output before moving to the next, not assumed correct. The server-calling code is still in the repo, intact, unused by the app today; see [How on-device matching actually works](#how-on-device-matching-actually-works) and [The dormant server path](#the-dormant-server-path-kept-not-deleted).
+That wasn't the original design. The app was first built against a backend (`../Face_recognition/`, its own README covers the ML pipeline and API) that uploads photos, matches server-side, and polls for results. As of 2026-09-27, matching has moved fully on-device, backed by a validated on-device SDK (`:facecore`, its own Gradle module in this repo) built and proven against that same backend across three separate phases — detection, alignment, then end-to-end match decisions — each checked against the server's real output before moving to the next, not assumed correct. The server-calling code is still in the repo, intact, unused by the app today; see [How on-device matching actually works](#how-on-device-matching-actually-works) and [The dormant server path](#the-dormant-server-path-kept-not-deleted).
 
 ---
 
@@ -40,7 +40,7 @@ No upload, no polling loop — steps 5-6 happen on the phone's CPU, typically in
 
 2. FaceMatchRepository.matchPhotos(selfie, eventPhotos, threshold)
    → the actual matching, delegated to OnDeviceFaceMatchRepositoryImpl
-     (data layer), which wraps :facesdk's FaceMatchEngine. Each photo's
+     (data layer), which wraps :facecore's FaceMatchEngine. Each photo's
      bytes are read when its turn comes and dropped straight after
 
 3. A photo that matches is written out, and nothing else ever is
@@ -51,16 +51,16 @@ Inside `OnDeviceFaceMatchRepositoryImpl`, photos are **not** batch-decoded into 
 
 `FaceMatchRepository` is a domain-layer interface (see `domain/repository/FaceMatchRepository.kt`) — deliberately named and shaped like `JobRepository` rather than "OnDeviceRepository", so a future server-backed implementation could satisfy the exact same contract without the use case or ViewModel changing. That's a real possibility left open, not a decision made — see [Cross-project status](../Face_recognition/DEEP_DIVE.md#cross-project-status) for the still-open server-vs-on-device routing question.
 
-## The `:facesdk` module
+## The `:facecore` module
 
-A standalone Gradle module (`facesdk/`, sibling to `app/`) — no Compose, Hilt, or Retrofit dependency, so it could be published or reused independently of this app. Public API, two layers:
+A standalone Gradle module (`facecore/`, sibling to `app/`) — no Compose, Hilt, or Retrofit dependency, so it could be published or reused independently of this app. Public API, two layers:
 
 - **The facade**, `FaceMatchEngine` — `create(context)` loads the bundled models and returns one object with `embedSelfie()`, `scoreEventPhoto()`, and the batch convenience `matchJob()`. Mirrors the backend's `face_matcher.py` job-level rules exactly (largest face wins for the selfie, closest face decides an event photo's distance) so the same job scores the same way on-device and on the server.
-- **The primitives**, independently usable: `FaceDetector` (SCRFD/`det_500m.onnx`), `FaceAligner` (insightface's `norm_crop`, ported), `FaceEmbedder` (`w600k_mbf.onnx`), `FaceMatcher` (cosine distance + threshold). Each interface lives in `facesdk/api/`; the one shipped implementation of each lives in its own package (`facesdk/detector/`, `facesdk/embedder/`) — not mixed into the interface file, so the algorithm-specific code isn't sitting next to the public contract it implements.
+- **The primitives**, independently usable: `FaceDetector` (SCRFD/`det_500m.onnx`), `FaceAligner` (insightface's `norm_crop`, ported), `FaceEmbedder` (`w600k_mbf.onnx`), `FaceMatcher` (cosine distance + threshold). Each interface lives in `facecore/api/`; the one shipped implementation of each lives in its own package (`facecore/detector/`, `facecore/embedder/`) — not mixed into the interface file, so the algorithm-specific code isn't sitting next to the public contract it implements.
 
 **Swapping models:** each interface has four constructors — `create(context)` (the bundled, validated models), `createFromAsset(context, path)` (same validated pipeline code, a different file you bundle), `createFromBytes(bytes)` (same pipeline, a model from anywhere), `createFromFile(file)` (same pipeline, loaded straight from a local file path — no buffering the whole model into memory first, which matters at ~14MB; this is what a downloaded-and-cached file uses). Swapping to a genuinely different detector/embedder architecture means implementing `FaceDetector`/`FaceEmbedder` yourself and passing it to `FaceMatchEngine.create(detector, embedder)` instead. `FaceDetectorConfig` (detection threshold, NMS threshold, input size) is a constructor parameter throughout, not a hardcoded constant.
 
-**Getting the model bytes onto the device is a separate concern from turning them into a working detector/embedder** — see [Model distribution](#model-distribution-why-release-builds-download-instead-of-bundling) below. `ModelDownloader` (also in `facesdk`) is generic: it knows how to fetch-and-cache-and-verify a file from *any* URL, with zero knowledge of what's inside it — a third-party app built on this SDK can point it at their own model, their own URL, their own checksum, and it composes with `createFromFile()` exactly the same way ours does.
+**Getting the model bytes onto the device is a separate concern from turning them into a working detector/embedder** — see [Model distribution](#model-distribution-why-release-builds-download-instead-of-bundling) below. `ModelDownloader` (also in `facecore`) is generic: it knows how to fetch-and-cache-and-verify a file from *any* URL, with zero knowledge of what's inside it — a third-party app built on this SDK can point it at their own model, their own URL, their own checksum, and it composes with `createFromFile()` exactly the same way ours does.
 
 **Defensive by construction, not just by convention:**
 - A wrong-shaped bring-your-own model (e.g. an embedder loaded into the detector slot) is rejected at construction with a clear `InvalidModelException`, not a cryptic crash the first time `detect()`/`embed()` runs.
@@ -71,11 +71,11 @@ A standalone Gradle module (`facesdk/`, sibling to `app/`) — no Compose, Hilt,
 - **Detection** — SCRFD's anchor-decode/NMS math ported line-for-line from insightface's `scrfd.py`; boxes compared photo-for-photo against the real Python detector on the same images. Root-caused and fixed a genuine bug in the process: `BitmapFactory.decodeFile()` doesn't apply EXIF orientation the way the server's `cv2.imread()` does, silently handing the detector a rotated image for ~30% of real phone photos.
 - **Alignment** — the similarity-transform math (closed-form complex-number least-squares, equivalent to skimage's Umeyama solver for 5 points) verified against the reference to ~7e-5 float32 precision before any Kotlin was written.
 - **End-to-end matching** — `runJobMatching()` (the validation harness, `spike/TimingSpikeRunner.kt`) reproduced the server's real-job recall exactly on 3 hand-labeled jobs, then stress-tested against 22 additional mixed selfie/event-photo combinations built from a real 227-photo trip archive: 184 event photos, **99.1% match/no-match agreement** with the server, mean distance difference 0.013.
-- 38 unit tests (`facesdk/src/test/`) cover the actual math and behavior — `FaceMatcher`'s cosine distance, `FaceAligner`'s transform on planted known-answer point sets, `ScrfdPostprocess`'s anchor decode/NMS on synthetic model outputs, model-shape validation, the engine's closed-state guard, `ModelDownloader`'s cache/verify/re-download logic against local `file://` URLs — not just "it doesn't crash."
+- 38 unit tests (`facecore/src/test/`) cover the actual math and behavior — `FaceMatcher`'s cosine distance, `FaceAligner`'s transform on planted known-answer point sets, `ScrfdPostprocess`'s anchor decode/NMS on synthetic model outputs, model-shape validation, the engine's closed-state guard, `ModelDownloader`'s cache/verify/re-download logic against local `file://` URLs — not just "it doesn't crash."
 
 ## Model distribution — why release builds download instead of bundling
 
-The two ONNX models are ~16MB combined. Bundling them in `facesdk/src/main/assets/` (what earlier builds did) meant every install paid that cost even though most of a typical app's users never touch the feature on day one. They now live in `facesdk/src/debug/assets/models/` instead — Android only includes debug-variant assets in debug builds, so:
+The two ONNX models are ~16MB combined. Bundling them in `facecore/src/main/assets/` (what earlier builds did) meant every install paid that cost even though most of a typical app's users never touch the feature on day one. They now live in `facecore/src/debug/assets/models/` instead — Android only includes debug-variant assets in debug builds, so:
 - **Debug builds** (what local development and `spike/TimingSpikeRunner` use) — unchanged, models present, works offline immediately, zero friction.
 - **Release builds** — genuinely ship with neither file. Confirmed by unzipping a built release APK and checking for `.onnx` files directly, not just trusting the Gradle config; the APK shrank by ~15MB after the move.
 
@@ -231,13 +231,13 @@ So the tick stops meaning *"you tapped download at some point"* and starts meani
 
 A 500MB, 200+ photo folder surfaced two bugs that no amount of code reading had.
 
-**The app froze for the entire job.** `viewModelScope` is `Dispatchers.Main.immediate`, and nothing below `submitJob` switched dispatcher — so unzipping the folder, every full-resolution decode and EXIF rotation, hundreds of file deletes, and the relocation of matched photos *all ran on the UI thread*. The irony is that `:facesdk` was already careful, hopping to `Dispatchers.Default` inside `detect` and `embed`; it was the decoding around those calls that never moved. Matching now owns `Dispatchers.Default` (it's CPU- and allocation-bound: a 12MP photo is a 48MB `ARGB_8888` bitmap, and the rotation copy briefly holds a second one), and the file work owns `Dispatchers.IO`.
+**The app froze for the entire job.** `viewModelScope` is `Dispatchers.Main.immediate`, and nothing below `submitJob` switched dispatcher — so unzipping the folder, every full-resolution decode and EXIF rotation, hundreds of file deletes, and the relocation of matched photos *all ran on the UI thread*. The irony is that `:facecore` was already careful, hopping to `Dispatchers.Default` inside `detect` and `embed`; it was the decoding around those calls that never moved. Matching now owns `Dispatchers.Default` (it's CPU- and allocation-bound: a 12MP photo is a 48MB `ARGB_8888` bitmap, and the rotation copy briefly holds a second one), and the file work owns `Dispatchers.IO`.
 
 **The job died partway through with `Could not decode temp_selfie.jpg`.** The selfie, the ZIP, and (at the time) the extracted folder all lived in `cacheDir` — which Android empties under storage pressure, at any time, including mid-operation. Extracting gigabytes *into* cacheDir is itself enough to trigger that, and what it deleted was the selfie we were about to read. `JobHistoryRepositoryImpl` had documented this exact rule for saved matches since it was written; the upload path simply didn't follow it. Working files moved to `filesDir/job_work/`, with explicit cleanup in a `finally` that removes the whole of a run's directory — which a failed job used to leave behind permanently.
 
 The trade is that nothing clears `filesDir` for us, so cleanup is deliberate in two places: the `finally` (which also runs on cancellation) handles every normal and failed path, and a sweep at process start reclaims whatever a process killed mid-job left behind. Where that sweep runs, and why it is *not* at the start of the next job, is in [Running the job outside the app](#running-the-job-outside-the-app-workmanager-and-a-foreground-service) below.
 
-**Failure got cheap, and the selfie is read once.** `prepareSelfie` runs *before* any scoring, so an unusable selfie costs a second rather than minutes of work — and it hands back the result instead of discarding it. `matchPhotos` takes that `PreparedSelfie` rather than a `File`, which means the selfie is decoded and embedded exactly once per job **and** the check cannot be skipped by accident: there is no other way to obtain the argument. `PreparedSelfie` is an empty interface in `domain/`, with the implementation's embedding-holding class private to the data layer, so a facesdk type still never crosses the boundary.
+**Failure got cheap, and the selfie is read once.** `prepareSelfie` runs *before* any scoring, so an unusable selfie costs a second rather than minutes of work — and it hands back the result instead of discarding it. `matchPhotos` takes that `PreparedSelfie` rather than a `File`, which means the selfie is decoded and embedded exactly once per job **and** the check cannot be skipped by accident: there is no other way to obtain the argument. `PreparedSelfie` is an empty interface in `domain/`, with the implementation's embedding-holding class private to the data layer, so a facecore type still never crosses the boundary.
 
 **Cancel.** A five-minute job committed by a single tap needs a way out. `UploadViewModel` holds the `Job` and `cancelJob()` cancels it and returns to the picker. Cancellation is cooperative, so `matchPhotos` calls `ensureActive()` before each photo's read and decode — the most expensive step in the loop — rather than letting the next suspension point handle it. Progress callbacks are also ignored unless the state is still `Processing`, since a cancel sets `Idle` immediately and an in-flight callback would otherwise flip the screen back.
 
@@ -470,7 +470,7 @@ The rule: each layer can only talk to the layer below it. The UI never directly 
 
 ### Data Layer
 
-**`OnDeviceFaceMatchRepositoryImpl.kt`** — The active repository. Wraps `:facesdk`'s `FaceMatchEngine`, lazily created on first use (guarded by a `Mutex`, not eagerly at DI-graph construction, so model loading never blocks app startup) and kept as a Hilt `@Singleton` so the ~16 MB of ONNX models load once, not per job. Decodes and scores event photos one at a time — see [How on-device matching actually works](#how-on-device-matching-actually-works) for why.
+**`OnDeviceFaceMatchRepositoryImpl.kt`** — The active repository. Wraps `:facecore`'s `FaceMatchEngine`, lazily created on first use (guarded by a `Mutex`, not eagerly at DI-graph construction, so model loading never blocks app startup) and kept as a Hilt `@Singleton` so the ~16 MB of ONNX models load once, not per job. Decodes and scores event photos one at a time — see [How on-device matching actually works](#how-on-device-matching-actually-works) for why.
 
 **`SnapFindApi.kt` / `JobRepositoryImpl.kt`** — The dormant server path. Still real, compiling code — see [The dormant server path](#the-dormant-server-path-kept-not-deleted) — just not in the active call graph.
 
@@ -501,7 +501,7 @@ interface JobRepository {
 }
 ```
 
-**`FindFacesInPhotosUseCase.kt`** — Owns the on-device sequence end to end: read the job's checkpoint → list the archive's photo entries in a fixed order → `FaceMatchRepository.matchPhotos()` over the ones not yet scored, writing out each match as it is found → clean up the temp selfie/zip files in a `finally` block regardless of success or failure. Catches `NoFaceDetectedException` (thrown by the SDK when the selfie itself has no detectable face) specifically, to surface a clear user-facing message instead of a raw exception string. Defaults `threshold` to `FaceMatcher.DEFAULT_THRESHOLD` (0.60, `:facesdk`'s own constant) rather than a second hardcoded copy of that number.
+**`FindFacesInPhotosUseCase.kt`** — Owns the on-device sequence end to end: read the job's checkpoint → list the archive's photo entries in a fixed order → `FaceMatchRepository.matchPhotos()` over the ones not yet scored, writing out each match as it is found → clean up the temp selfie/zip files in a `finally` block regardless of success or failure. Catches `NoFaceDetectedException` (thrown by the SDK when the selfie itself has no detectable face) specifically, to surface a clear user-facing message instead of a raw exception string. Defaults `threshold` to `FaceMatcher.DEFAULT_THRESHOLD` (0.60, `:facecore`'s own constant) rather than a second hardcoded copy of that number.
 
 Returns `Result<List<FaceMatchResult>>` — same reasoning as before: the ViewModel gets a success value or a caught exception, never a crash.
 
@@ -581,7 +581,7 @@ SnapFindAI/                             # this Gradle project
 │   │   │   └── SnapFindApi.kt        # Retrofit interface (dormant path)
 │   │   ├── ModelConfig.kt            # model URLs + checksums, shared by both repos below (ACTIVE)
 │   │   └── repository/
-│   │       ├── OnDeviceFaceMatchRepositoryImpl.kt   # Wraps facesdk's FaceMatchEngine (ACTIVE)
+│   │       ├── OnDeviceFaceMatchRepositoryImpl.kt   # Wraps facecore's FaceMatchEngine (ACTIVE)
 │   │       ├── ModelProvisioningRepositoryImpl.kt   # checks/downloads models for onboarding (ACTIVE)
 │   │       ├── JobHistoryRepositoryImpl.kt          # Room-backed last-job persistence (ACTIVE)
 │   │       ├── MediaStoreGalleryRepositoryImpl.kt   # Save a match to the system gallery (ACTIVE)
@@ -614,13 +614,13 @@ SnapFindAI/                             # this Gradle project
 │   ├── utils/
 │   │   ├── FileHelper.kt             # Uri->File, plus atomic file writes
 │   │   └── DownloadNotificationHelper.kt  # posts the batch-save-completed system notification
-│   ├── spike/                        # facesdk validation harness — see facesdk/README below
+│   ├── spike/                        # facecore validation harness — see facecore/README below
 │   ├── MainActivity.kt               # Single activity, hosts Compose navigation
 │   └── SnapFindApplication.kt        # Hilt application entry point (@HiltAndroidApp)
 │
-└── facesdk/                          # standalone module, no Compose/Hilt/Retrofit deps
+└── facecore/                          # standalone module, no Compose/Hilt/Retrofit deps
     ├── src/debug/assets/models/      # bundled models -- debug builds only (see Model distribution)
-    └── src/main/java/com/example/snapfindai/facesdk/
+    └── src/main/java/com/example/snapfindai/facecore/
         ├── api/                      # FaceDetector, FaceEmbedder, FaceDetectorConfig — interfaces + config
         ├── detector/                 # ScrfdFaceDetector + ScrfdPostprocess (the one impl)
         ├── embedder/                 # OnnxFaceEmbedder (the one impl)
@@ -628,7 +628,7 @@ SnapFindAI/                             # this Gradle project
         ├── internal/                 # OrtSessions — shared ONNX session loading
         ├── FaceMatchEngine.kt        # the facade
         ├── ModelDownloader.kt        # generic fetch+cache+checksum-verify, for release builds
-        ├── FaceAligner.kt, FaceMatcher.kt, FaceSdkLogger.kt, InvalidModelException.kt, ...
+        ├── FaceAligner.kt, FaceMatcher.kt, FaceCoreLogger.kt, InvalidModelException.kt, ...
         └── (src/test/ — 38 unit tests)
 ```
 
@@ -646,10 +646,10 @@ SnapFindAI/                             # this Gradle project
 ### Steps
 
 1. Clone the project and open the `SnapFindAI` folder in Android Studio
-2. Wait for Gradle sync to complete (pulls in both `:app` and `:facesdk`)
+2. Wait for Gradle sync to complete (pulls in both `:app` and `:facecore`)
 3. Run the app on your device — pick a selfie and a ZIP of event photos from the picker, tap "Find My Photos"
 
-The model weights (`det_500m.onnx`, `w600k_mbf.onnx`, ~16 MB total) live in `facesdk/src/debug/assets/models/` and are gitignored — same rationale as the backend never committing its downloaded model weights. They're only bundled in debug builds; if they're missing there, `FaceDetector.create()`/`FaceEmbedder.create()` will fail to find the asset — pull them from wherever the backend's `models/insightface/models/buffalo_sc/` weights came from. Release builds don't need them locally at all — they download from the GitHub Release instead.
+The model weights (`det_500m.onnx`, `w600k_mbf.onnx`, ~16 MB total) live in `facecore/src/debug/assets/models/` and are gitignored — same rationale as the backend never committing its downloaded model weights. They're only bundled in debug builds; if they're missing there, `FaceDetector.create()`/`FaceEmbedder.create()` will fail to find the asset — pull them from wherever the backend's `models/insightface/models/buffalo_sc/` weights came from. Release builds don't need them locally at all — they download from the GitHub Release instead.
 
 ### Why cleartext HTTP is allowed
 `AndroidManifest.xml` still contains `android:usesCleartextTraffic="true"`, a leftover from the dormant server path (the backend ran on plain HTTP on a local IP). Not load-bearing for the active on-device flow, but not removed either — reviving the server path would need it again.
@@ -665,15 +665,15 @@ The model weights (`det_500m.onnx`, `w600k_mbf.onnx`, ~16 MB total) live in `fac
 | **ViewModel + StateFlow** | Survives screen rotations, single source of truth for UI state |
 | **Hilt** | Removes manual dependency wiring, makes code testable |
 | **ONNX Runtime (Android)** | Runs the on-device SCRFD detector + w600k_mbf embedder — the actual matching engine now |
-| **Coroutines** | Makes async code look sequential, no callback hell; every facesdk call is suspend |
+| **Coroutines** | Makes async code look sequential, no callback hell; every facecore call is suspend |
 | **Coil** | Native Compose image loading — now loading local `File`s instead of network URLs |
 | **Clean Architecture** | Separation of concerns — each layer has one job |
 | **Retrofit + OkHttp** | Still present for the dormant server path; not used by the active flow |
-| **`java.net.URL` (plain, no library)** | `ModelDownloader`'s model fetch — deliberately no Retrofit/Ktor dependency, so facesdk doesn't force a networking stack on whatever a host app already uses |
+| **`java.net.URL` (plain, no library)** | `ModelDownloader`'s model fetch — deliberately no Retrofit/Ktor dependency, so facecore doesn't force a networking stack on whatever a host app already uses |
 | **Room** | Last-completed-job persistence (`jobs`/`matched_photos` tables) — survives app restart; not used for file bytes, only metadata pointing at files in `filesDir` |
 | **MediaStore** | Saving a matched photo into the system gallery — scoped-storage insert on API 29+, legacy public-directory write + `WRITE_EXTERNAL_STORAGE` below that |
 | **`androidx.core:core-splashscreen`** | System splash screen kept on screen until `AppStartupViewModel` knows whether Onboarding is needed — avoids a blank frame or a wrong-screen flash |
-| **Robolectric + JUnit** | facesdk's 38 unit tests — real Android graphics classes (Bitmap, Canvas, RectF) under test, not stubbed out |
+| **Robolectric + JUnit** | facecore's 38 unit tests — real Android graphics classes (Bitmap, Canvas, RectF) under test, not stubbed out |
 
 ---
 
@@ -681,7 +681,7 @@ The model weights (`det_500m.onnx`, `w600k_mbf.onnx`, ~16 MB total) live in `fac
 
 The original MVP checklist (Compose UI, Retrofit integration, Hilt DI, Coil image loading) is done.
 
-**On-device matching (2026-09-27): done.** Three validation phases (detection, alignment, end-to-end matching) each checked against the real backend, a standalone `:facesdk` module with a clean public API, and the real app wired to use it — no server call in the active flow. See [How on-device matching actually works](#how-on-device-matching-actually-works) and [The `:facesdk` module](#the-facesdk-module) above.
+**On-device matching (2026-09-27): done.** Three validation phases (detection, alignment, end-to-end matching) each checked against the real backend, a standalone `:facecore` module with a clean public API, and the real app wired to use it — no server call in the active flow. See [How on-device matching actually works](#how-on-device-matching-actually-works) and [The `:facecore` module](#the-facecore-module) above.
 
 **SDK hardening (2026-09-27): done.** The four gaps flagged in an architecture review are fixed: `FaceDetectorConfig` makes detection/NMS thresholds and input size real constructor parameters instead of hardcoded constants; a wrong-shaped bring-your-own model is rejected at construction with a clear `InvalidModelException`; `FaceMatchEngine` no longer exposes its detector/embedder as independently closeable, and using it after `close()` throws instead of misbehaving quietly; real ProGuard consumer rules ship in the AAR automatically. 12 tests added for this alone.
 
@@ -739,7 +739,7 @@ The original MVP checklist (Compose UI, Retrofit integration, Hilt DI, Coil imag
 - **Gallery-saved photos are duplicated, not aliased.** A saved match exists both as the app's internal `filesDir` copy (what the grid renders) and as a separate MediaStore copy. Android has no API to alias an arbitrary app-private file into MediaStore; the grid could instead load from the gallery `Uri` once saved and drop the internal copy — a storage-efficiency concern, not a correctness one.
 - **Reinstalling loses MediaStore ownership** of previously saved photos, so they read as un-downloaded and re-downloading produces `foo (1).jpg` duplicates.
 - **The tick only reconciles on resume** — no `ContentObserver`, so a gallery deletion in split-screen while Results is visible leaves it stale until the screen resumes.
-- **Nothing in the job lifecycle is untested any more.** The app module has 29 tests across four classes (`:facesdk` has 41 across eight): DAO guards via `Room.inMemoryDatabaseBuilder`, the gallery reconcile, the use case's resumption, naming and write behaviour, and the sweeper against a real WorkManager. What is still untested is the UI layer, deliberately.
+- **Nothing in the job lifecycle is untested any more.** The app module has 29 tests across four classes (`:facecore` has 41 across eight): DAO guards via `Room.inMemoryDatabaseBuilder`, the gallery reconcile, the use case's resumption, naming and write behaviour, and the sweeper against a real WorkManager. What is still untested is the UI layer, deliberately.
 - **Server-vs-on-device routing is an open question, not a decision.** `FaceMatchRepository` is shaped so a server-backed implementation could plug in later without touching the use case — but whether/when that's worth building is undecided, and the Retrofit path remains wired into Hilt with nothing calling it. See [Cross-project status](../Face_recognition/DEEP_DIVE.md#cross-project-status) in the backend's docs.
 
 Cross-project status (this app + the backend) is tracked in one place to avoid two docs drifting out of sync: see "Cross-project status" in `../Face_recognition/README.md`.

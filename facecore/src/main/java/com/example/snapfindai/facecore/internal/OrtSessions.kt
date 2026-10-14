@@ -1,4 +1,4 @@
-package com.example.snapfindai.facesdk.internal
+package com.example.snapfindai.facecore.internal
 
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession

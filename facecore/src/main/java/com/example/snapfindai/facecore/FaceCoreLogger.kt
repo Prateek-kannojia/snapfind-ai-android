@@ -1,4 +1,4 @@
-package com.example.snapfindai.facesdk
+package com.example.snapfindai.facecore
 
 /**
  * The SDK never pulls in a logging framework of its own — this is the hook
@@ -7,10 +7,10 @@ package com.example.snapfindai.facesdk
  * event photo in a batch) are reported here instead of being silently
  * swallowed.
  */
-fun interface FaceSdkLogger {
+fun interface FaceCoreLogger {
     fun onError(message: String, throwable: Throwable)
 
     companion object {
-        val NONE = FaceSdkLogger { _, _ -> }
+        val NONE = FaceCoreLogger { _, _ -> }
     }
 }

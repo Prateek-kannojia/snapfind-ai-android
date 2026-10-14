@@ -1,14 +1,14 @@
-package com.example.snapfindai.facesdk
+package com.example.snapfindai.facecore
 
 import android.graphics.Bitmap
 import android.graphics.PointF
 import android.graphics.RectF
-import com.example.snapfindai.facesdk.api.FaceDetector
-import com.example.snapfindai.facesdk.api.FaceEmbedder
-import com.example.snapfindai.facesdk.model.DetectedFace
-import com.example.snapfindai.facesdk.model.EventPhotoInput
-import com.example.snapfindai.facesdk.model.FaceEmbedding
-import com.example.snapfindai.facesdk.model.FaceLandmarks
+import com.example.snapfindai.facecore.api.FaceDetector
+import com.example.snapfindai.facecore.api.FaceEmbedder
+import com.example.snapfindai.facecore.model.DetectedFace
+import com.example.snapfindai.facecore.model.EventPhotoInput
+import com.example.snapfindai.facecore.model.FaceEmbedding
+import com.example.snapfindai.facecore.model.FaceLandmarks
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -43,7 +43,7 @@ class FaceMatchEngineTest {
 
     private fun bitmap(size: Int = 4) = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
 
-    private class RecordingLogger : FaceSdkLogger {
+    private class RecordingLogger : FaceCoreLogger {
         val errors = mutableListOf<Pair<String, Throwable>>()
         override fun onError(message: String, throwable: Throwable) {
             errors += message to throwable
@@ -68,7 +68,7 @@ class FaceMatchEngineTest {
         val selfie = bitmap()
         val detector = FakeFaceDetector(mapOf(selfie to { emptyList() }))
         val embedder = FakeFaceEmbedder { FaceEmbedding(floatArrayOf(1f, 0f)) }
-        val engine = FaceMatchEngine(detector, embedder, FaceSdkLogger.NONE)
+        val engine = FaceMatchEngine(detector, embedder, FaceCoreLogger.NONE)
 
         try {
             engine.embedSelfie(selfie)
@@ -154,7 +154,7 @@ class FaceMatchEngineTest {
             calls++
             if (calls % 2 == 1) FaceEmbedding(floatArrayOf(1f, 0f)) else FaceEmbedding(floatArrayOf(0f, 1f))
         } // selfie embeds to [1,0]; farPhoto embeds to [0,1] -> cosine distance 1.0
-        val engine = FaceMatchEngine(detector, embedder, FaceSdkLogger.NONE)
+        val engine = FaceMatchEngine(detector, embedder, FaceCoreLogger.NONE)
 
         val strict = engine.matchJob(selfie, listOf(EventPhotoInput("far.jpg", farPhoto)), threshold = 0.6f)
         val lenient = engine.matchJob(selfie, listOf(EventPhotoInput("far.jpg", farPhoto)), threshold = 1.0f)
@@ -168,7 +168,7 @@ class FaceMatchEngineTest {
         val selfie = bitmap()
         val detector = FakeFaceDetector(mapOf(selfie to { listOf(DetectedFace(someBox, 0.9f, someLandmarks)) }))
         val embedder = FakeFaceEmbedder { FaceEmbedding(floatArrayOf(1f, 0f)) }
-        val engine = FaceMatchEngine(detector, embedder, FaceSdkLogger.NONE)
+        val engine = FaceMatchEngine(detector, embedder, FaceCoreLogger.NONE)
 
         engine.close()
 

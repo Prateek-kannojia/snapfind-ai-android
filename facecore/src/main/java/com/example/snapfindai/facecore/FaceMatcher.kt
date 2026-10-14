@@ -1,6 +1,6 @@
-package com.example.snapfindai.facesdk
+package com.example.snapfindai.facecore
 
-import com.example.snapfindai.facesdk.model.FaceEmbedding
+import com.example.snapfindai.facecore.model.FaceEmbedding
 import kotlin.math.sqrt
 
 /**

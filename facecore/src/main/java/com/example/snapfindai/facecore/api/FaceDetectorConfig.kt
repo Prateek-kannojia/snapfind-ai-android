@@ -1,4 +1,4 @@
-package com.example.snapfindai.facesdk.api
+package com.example.snapfindai.facecore.api
 
 /**
  * Tuning knobs for the SCRFD detector. Defaults match insightface's own

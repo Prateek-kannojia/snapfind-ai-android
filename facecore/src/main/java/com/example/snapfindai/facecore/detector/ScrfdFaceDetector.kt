@@ -1,13 +1,13 @@
-package com.example.snapfindai.facesdk.detector
+package com.example.snapfindai.facecore.detector
 
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import android.graphics.Bitmap
-import com.example.snapfindai.facesdk.InvalidModelException
-import com.example.snapfindai.facesdk.api.FaceDetector
-import com.example.snapfindai.facesdk.api.FaceDetectorConfig
-import com.example.snapfindai.facesdk.model.DetectedFace
+import com.example.snapfindai.facecore.InvalidModelException
+import com.example.snapfindai.facecore.api.FaceDetector
+import com.example.snapfindai.facecore.api.FaceDetectorConfig
+import com.example.snapfindai.facecore.model.DetectedFace
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.nio.FloatBuffer

@@ -1,11 +1,11 @@
-package com.example.snapfindai.facesdk
+package com.example.snapfindai.facecore
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
-import com.example.snapfindai.facesdk.model.FaceLandmarks
+import com.example.snapfindai.facecore.model.FaceLandmarks
 
 /**
  * insightface's face_align.norm_crop, ported. Fits a similarity transform

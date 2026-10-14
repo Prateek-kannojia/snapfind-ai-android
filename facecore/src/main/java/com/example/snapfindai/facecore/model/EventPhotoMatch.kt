@@ -1,8 +1,8 @@
-package com.example.snapfindai.facesdk.model
+package com.example.snapfindai.facecore.model
 
 import android.graphics.Bitmap
 
-/** One event photo to score against a selfie in [com.example.snapfindai.facesdk.FaceMatchEngine.matchJob]. */
+/** One event photo to score against a selfie in [com.example.snapfindai.facecore.FaceMatchEngine.matchJob]. */
 data class EventPhotoInput(val id: String, val bitmap: Bitmap)
 
 /**

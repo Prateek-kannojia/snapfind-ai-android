@@ -21,5 +21,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "SnapFind AI"
 include(":app")
-include(":facesdk")
+include(":facecore")
  

@@ -1,14 +1,14 @@
-package com.example.snapfindai.facesdk.embedder
+package com.example.snapfindai.facecore.embedder
 
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import ai.onnxruntime.TensorInfo
 import android.graphics.Bitmap
-import com.example.snapfindai.facesdk.FaceAligner
-import com.example.snapfindai.facesdk.InvalidModelException
-import com.example.snapfindai.facesdk.api.FaceEmbedder
-import com.example.snapfindai.facesdk.model.FaceEmbedding
+import com.example.snapfindai.facecore.FaceAligner
+import com.example.snapfindai.facecore.InvalidModelException
+import com.example.snapfindai.facecore.api.FaceEmbedder
+import com.example.snapfindai.facecore.model.FaceEmbedding
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.nio.FloatBuffer

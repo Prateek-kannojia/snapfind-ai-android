@@ -1,4 +1,4 @@
-package com.example.snapfindai.facesdk
+package com.example.snapfindai.facecore
 
 /**
  * Thrown when a model passed to createFromAsset()/createFromBytes() doesn't

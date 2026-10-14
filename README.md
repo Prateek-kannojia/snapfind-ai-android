@@ -4,7 +4,7 @@ An Android app that finds you in a batch of event photos: pick a selfie and a ZI
 
 **Full architecture walkthrough, layer-by-layer explanation, and code snippets:** [DEEP_DIVE.md](DEEP_DIVE.md)
 
-Backend lives in [`../Face_recognition/`](../Face_recognition/) — no longer called by the app's active flow, but the on-device SDK (`:facesdk`) was built and validated against it across three separate phases before this app used it. Full story in DEEP_DIVE.md.
+Backend lives in [`../Face_recognition/`](../Face_recognition/) — no longer called by the app's active flow, but the on-device SDK (`:facecore`) was built and validated against it across three separate phases before this app used it. Full story in DEEP_DIVE.md.
 
 ---
 
@@ -26,10 +26,10 @@ Presentation (Compose, ViewModel)
       ↓
 Domain (use case, repository interface)
       ↓
-Data (repository impl, wraps :facesdk's FaceMatchEngine)
+Data (repository impl, wraps :facecore's FaceMatchEngine)
 ```
 
-The use case (`FindFacesInPhotosUseCase`) owns the actual sequence: read the job's checkpoint → prepare the selfie → list the archive's photos in a fixed order → score the ones not yet scored, writing out each match as it is found → persist → clean up. It is safe to call repeatedly for the same job, and every call either advances it or finishes it. It owns its dispatchers too, rather than trusting the caller's: file work on `Dispatchers.IO`, matching on `Dispatchers.Default`. `:facesdk` is a standalone Gradle module (no Compose/Hilt/Retrofit deps) with its own public API — see DEEP_DIVE.md for its facade + primitives shape.
+The use case (`FindFacesInPhotosUseCase`) owns the actual sequence: read the job's checkpoint → prepare the selfie → list the archive's photos in a fixed order → score the ones not yet scored, writing out each match as it is found → persist → clean up. It is safe to call repeatedly for the same job, and every call either advances it or finishes it. It owns its dispatchers too, rather than trusting the caller's: file work on `Dispatchers.IO`, matching on `Dispatchers.Default`. `:facecore` is a standalone Gradle module (no Compose/Hilt/Retrofit deps) with its own public API — see DEEP_DIVE.md for its facade + primitives shape.
 
 A shared design layer sits under the screens: `ui/theme/` holds spacing, dimension, shape, motion and colour tokens (a dp literal in a screen is treated as a smell), and `presentation/components/` holds one definition each of the pill button, photo tile, status badge, selection indicator and wavy progress ring — so a saved tick and a selected tick can't drift into different shapes.
 
@@ -45,10 +45,10 @@ Kotlin · Jetpack Compose (Material 3, expressive progress indicators) · Hilt (
 
 ## Run it
 
-1. Open in Android Studio, let Gradle sync (pulls in `:app` and `:facesdk`)
+1. Open in Android Studio, let Gradle sync (pulls in `:app` and `:facecore`)
 2. Run the app — no backend required for face matching. Release builds show a one-time Onboarding screen that downloads the ~16MB of models with a real progress bar, keeping the shipped APK small — see DEEP_DIVE.md.
 
-> **Known gap:** debug builds *ship* the model assets (`facesdk/src/debug/assets/models/`), but the active repository always loads via `ModelDownloader`, so debug downloads them too and needs network on first run. The asset-loading factories exist in `:facesdk`; nothing wires them up. Either wire them or drop the claim — not yet decided.
+> **Known gap:** debug builds *ship* the model assets (`facecore/src/debug/assets/models/`), but the active repository always loads via `ModelDownloader`, so debug downloads them too and needs network on first run. The asset-loading factories exist in `:facecore`; nothing wires them up. Either wire them or drop the claim — not yet decided.
 
 ## Project structure
 
@@ -64,14 +64,14 @@ app/src/main/java/com/example/snapfindai/
 ├── ui/theme/      # design tokens: color, type, spacing, dimens, shapes
 └── utils/
 
-facesdk/           # standalone on-device face-matching SDK, sibling module
+facecore/           # standalone on-device face-matching SDK, sibling module
 ```
 
 ### Storage at a glance
 
 | Where | What | Lifetime |
 |---|---|---|
-| `filesDir/facesdk_models/` | the two ONNX models (~16MB) | downloaded once, kept |
+| `filesDir/facecore_models/` | the two ONNX models (~16MB) | downloaded once, kept |
 | `filesDir/saved_matches/<jobId>/` | matched photos, one folder per job | until the job's matches are removed, or the job is deleted |
 | `filesDir/job_work/<requestId>/` | scratch for one run: its selfie, its ZIP, and the photos out of it that matched | the whole directory is deleted when that run ends; kept while the run can still resume; orphans swept at process start |
 | Room `snapfind.db` | job + match metadata only, never image bytes, plus how far a running job got | until app data is cleared |

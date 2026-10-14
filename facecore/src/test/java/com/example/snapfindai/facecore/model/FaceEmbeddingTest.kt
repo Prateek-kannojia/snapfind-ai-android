@@ -1,4 +1,4 @@
-package com.example.snapfindai.facesdk.model
+package com.example.snapfindai.facecore.model
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals

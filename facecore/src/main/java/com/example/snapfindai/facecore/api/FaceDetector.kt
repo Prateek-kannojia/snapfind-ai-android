@@ -1,11 +1,11 @@
-package com.example.snapfindai.facesdk.api
+package com.example.snapfindai.facecore.api
 
 import ai.onnxruntime.OrtEnvironment
 import android.content.Context
 import android.graphics.Bitmap
-import com.example.snapfindai.facesdk.detector.ScrfdFaceDetector
-import com.example.snapfindai.facesdk.internal.OrtSessions
-import com.example.snapfindai.facesdk.model.DetectedFace
+import com.example.snapfindai.facecore.detector.ScrfdFaceDetector
+import com.example.snapfindai.facecore.internal.OrtSessions
+import com.example.snapfindai.facecore.model.DetectedFace
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.Closeable
@@ -16,7 +16,7 @@ import java.io.File
  * implementation is SCRFD (det_500m) — the same detector production runs —
  * but this is a plain interface: a host app can implement its own (a
  * different architecture, a cloud call, a fake for tests) and hand it to
- * [com.example.snapfindai.facesdk.FaceMatchEngine.create].
+ * [com.example.snapfindai.facecore.FaceMatchEngine.create].
  */
 interface FaceDetector : Closeable {
     suspend fun detect(bitmap: Bitmap): List<DetectedFace>
@@ -31,7 +31,7 @@ interface FaceDetector : Closeable {
          * asset path — e.g. a newer version of det_500m the host app bundles
          * itself. Reuses the real, validated preprocessing/decoding code;
          * nothing to reimplement, just point it at a different file.
-         * @throws com.example.snapfindai.facesdk.InvalidModelException if the model's input/output shape doesn't match what SCRFD expects.
+         * @throws com.example.snapfindai.facecore.InvalidModelException if the model's input/output shape doesn't match what SCRFD expects.
          */
         suspend fun createFromAsset(
             context: Context,
@@ -49,7 +49,7 @@ interface FaceDetector : Closeable {
          * different asset layout entirely. Must be an SCRFD-shaped ONNX
          * graph (same inputs/outputs as det_500m); a different detector
          * architecture needs its own [FaceDetector] implementation instead.
-         * @throws com.example.snapfindai.facesdk.InvalidModelException if the model's input/output shape doesn't match what SCRFD expects.
+         * @throws com.example.snapfindai.facecore.InvalidModelException if the model's input/output shape doesn't match what SCRFD expects.
          */
         suspend fun createFromBytes(
             modelBytes: ByteArray,
@@ -63,10 +63,10 @@ interface FaceDetector : Closeable {
         /**
          * The same SCRFD implementation, loading a model from a local file —
          * e.g. one downloaded and cached at runtime (see
-         * [com.example.snapfindai.facesdk.ModelDownloader]). Loads straight
+         * [com.example.snapfindai.facecore.ModelDownloader]). Loads straight
          * from disk rather than buffering the whole file into memory first,
          * which matters for a model this size.
-         * @throws com.example.snapfindai.facesdk.InvalidModelException if the model's input/output shape doesn't match what SCRFD expects.
+         * @throws com.example.snapfindai.facecore.InvalidModelException if the model's input/output shape doesn't match what SCRFD expects.
          */
         suspend fun createFromFile(
             file: File,

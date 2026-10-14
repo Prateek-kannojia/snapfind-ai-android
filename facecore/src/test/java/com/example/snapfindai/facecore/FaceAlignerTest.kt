@@ -1,7 +1,7 @@
-package com.example.snapfindai.facesdk
+package com.example.snapfindai.facecore
 
 import android.graphics.PointF
-import com.example.snapfindai.facesdk.model.FaceLandmarks
+import com.example.snapfindai.facecore.model.FaceLandmarks
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith

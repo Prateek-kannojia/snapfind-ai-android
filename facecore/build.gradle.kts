@@ -4,14 +4,14 @@ plugins {
 }
 
 android {
-    namespace = "com.example.snapfindai.facesdk"
+    namespace = "com.example.snapfindai.facecore"
     compileSdk = 36
 
     defaultConfig {
         minSdk = 24
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Bundled into this module's AAR, applied automatically to any app
-        // that depends on :facesdk and enables R8 -- see consumer-rules.pro.
+        // that depends on :facecore and enables R8 -- see consumer-rules.pro.
         consumerProguardFiles("consumer-rules.pro")
     }
 

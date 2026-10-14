@@ -1,9 +1,9 @@
-package com.example.snapfindai.facesdk.detector
+package com.example.snapfindai.facecore.detector
 
 import android.graphics.PointF
 import android.graphics.RectF
-import com.example.snapfindai.facesdk.model.DetectedFace
-import com.example.snapfindai.facesdk.model.FaceLandmarks
+import com.example.snapfindai.facecore.model.DetectedFace
+import com.example.snapfindai.facecore.model.FaceLandmarks
 import kotlin.math.max
 import kotlin.math.min
 

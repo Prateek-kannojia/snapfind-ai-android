@@ -38,9 +38,11 @@ android {
     }
     buildFeatures {
         compose = true
-        // For BuildConfig.DEBUG, which gates the dev job seeder. A compile-time
-        // constant rather than a runtime flag check, so R8 drops the branch --
-        // and the seeder it refers to -- out of a release build entirely.
+        // For BuildConfig.DEBUG, still read at the dev seeder's call site to
+        // skip the work entirely. It is no longer what keeps the seeder out of
+        // a release build: that is now source-set placement (the real seeder
+        // is in src/debug/java/, a no-op stub in src/release/java/), which
+        // holds whether or not R8 is enabled.
         buildConfig = true
     }
     testOptions {
@@ -102,9 +104,16 @@ dependencies {
     implementation(libs.androidx.hilt.work)
     ksp(libs.androidx.hilt.compiler)
 
-    // Networking
-    implementation(libs.retrofit.core)
-    implementation(libs.retrofit.gson)
+    // Networking -- debug only, and that is the whole point of the scope.
+    // The server path (SnapFindApi, JobRepository and its impl, NetworkModule)
+    // lives in src/debug/java/ and nothing in the active on-device flow calls
+    // it. Declared `implementation` it would still be on the release
+    // classpath and still packaged: Retrofit pulls in OkHttp and Gson, which
+    // is roughly 2MB of dex plus OkHttp's public-suffix table, shipped to
+    // every user for code no release build can reach. `debugImplementation`
+    // keeps the local-backend workflow available without that.
+    debugImplementation(libs.retrofit.core)
+    debugImplementation(libs.retrofit.gson)
 
     // Image Loading
     implementation(libs.coil.compose)
@@ -114,7 +123,7 @@ dependencies {
     implementation(libs.androidx.hilt.navigation.compose)
 
     // On-device face matching SDK — see spike/ package for its validation harness
-    implementation(project(":facesdk"))
+    implementation(project(":facecore"))
 
     // Local persistence (last completed job, so results survive an app restart)
     implementation(libs.room.runtime)

@@ -1,4 +1,4 @@
-# Rules bundled into facesdk's AAR and applied automatically to any app
+# Rules bundled into facecore's AAR and applied automatically to any app
 # that depends on this module and enables R8/ProGuard minification.
 
 # ONNX Runtime's Java API is the JNI bridge to its native inference engine:
@@ -9,12 +9,12 @@
 -keep class ai.onnxruntime.** { *; }
 -dontwarn ai.onnxruntime.**
 
-# facesdk's own public API: interfaces and models a host app's code
+# facecore's own public API: interfaces and models a host app's code
 # references by name (and may reflectively inspect, e.g. Gson/Moshi if a
 # consumer serializes FaceMatchResult-like data). Kept so a minified host
 # app doesn't rename anything this module or its callers refer to across
 # the library boundary.
--keep interface com.example.snapfindai.facesdk.api.** { *; }
--keep class com.example.snapfindai.facesdk.api.** { *; }
--keep class com.example.snapfindai.facesdk.model.** { *; }
--keep class com.example.snapfindai.facesdk.FaceMatchEngine { *; }
+-keep interface com.example.snapfindai.facecore.api.** { *; }
+-keep class com.example.snapfindai.facecore.api.** { *; }
+-keep class com.example.snapfindai.facecore.model.** { *; }
+-keep class com.example.snapfindai.facecore.FaceMatchEngine { *; }

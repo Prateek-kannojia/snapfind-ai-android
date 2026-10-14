@@ -1,11 +1,11 @@
-package com.example.snapfindai.facesdk.api
+package com.example.snapfindai.facecore.api
 
 import ai.onnxruntime.OrtEnvironment
 import android.content.Context
 import android.graphics.Bitmap
-import com.example.snapfindai.facesdk.embedder.OnnxFaceEmbedder
-import com.example.snapfindai.facesdk.internal.OrtSessions
-import com.example.snapfindai.facesdk.model.FaceEmbedding
+import com.example.snapfindai.facecore.embedder.OnnxFaceEmbedder
+import com.example.snapfindai.facecore.internal.OrtSessions
+import com.example.snapfindai.facecore.model.FaceEmbedding
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.Closeable
@@ -13,10 +13,10 @@ import java.io.File
 
 /**
  * Embeds an aligned 112x112 face crop (see
- * [com.example.snapfindai.facesdk.FaceAligner.align]) into a 512-D vector.
+ * [com.example.snapfindai.facecore.FaceAligner.align]) into a 512-D vector.
  * The only shipped implementation is w600k_mbf — the same embedder
  * production runs — but this is a plain interface: a host app can implement
- * its own and hand it to [com.example.snapfindai.facesdk.FaceMatchEngine.create].
+ * its own and hand it to [com.example.snapfindai.facecore.FaceMatchEngine.create].
  */
 interface FaceEmbedder : Closeable {
     suspend fun embed(alignedFace: Bitmap): FaceEmbedding
@@ -54,7 +54,7 @@ interface FaceEmbedder : Closeable {
         /**
          * The same w600k_mbf implementation, loading a model from a local
          * file — e.g. one downloaded and cached at runtime (see
-         * [com.example.snapfindai.facesdk.ModelDownloader]). Loads straight
+         * [com.example.snapfindai.facecore.ModelDownloader]). Loads straight
          * from disk rather than buffering the whole file into memory first,
          * which matters for a model this size.
          */

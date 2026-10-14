@@ -1,6 +1,6 @@
-package com.example.snapfindai.facesdk.embedder
+package com.example.snapfindai.facecore.embedder
 
-import com.example.snapfindai.facesdk.InvalidModelException
+import com.example.snapfindai.facecore.InvalidModelException
 import org.junit.Assert.assertThrows
 import org.junit.Test
 

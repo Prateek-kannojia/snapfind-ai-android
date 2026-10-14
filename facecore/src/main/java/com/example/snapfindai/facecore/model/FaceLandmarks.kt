@@ -1,4 +1,4 @@
-package com.example.snapfindai.facesdk.model
+package com.example.snapfindai.facecore.model
 
 import android.graphics.PointF
 
@@ -6,7 +6,7 @@ import android.graphics.PointF
  * The 5 facial landmarks SCRFD detects alongside a face box — left eye,
  * right eye, nose, left mouth corner, right mouth corner, in that order.
  * Coordinates are in the source image's pixel space. This is what
- * [com.example.snapfindai.facesdk.FaceAligner] needs to compute an aligned
+ * [com.example.snapfindai.facecore.FaceAligner] needs to compute an aligned
  * crop.
  */
 class FaceLandmarks(val points: Array<PointF>) {

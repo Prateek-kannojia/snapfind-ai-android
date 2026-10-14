@@ -1,4 +1,4 @@
-package com.example.snapfindai.facesdk
+package com.example.snapfindai.facecore
 
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
@@ -19,11 +19,11 @@ import java.security.MessageDigest
  * already-verified file is never re-downloaded.
  *
  * Exists for hosts that don't want the ~16MB of bundled model weights
- * inflating every install's APK (see facesdk's own debug-only assets --
+ * inflating every install's APK (see facecore's own debug-only assets --
  * they exist for local development/testing, not for a shipped release
  * build) -- fetch them once on first launch instead, cache them, and load
- * with [com.example.snapfindai.facesdk.api.FaceDetector.createFromFile] /
- * [com.example.snapfindai.facesdk.api.FaceEmbedder.createFromFile].
+ * with [com.example.snapfindai.facecore.api.FaceDetector.createFromFile] /
+ * [com.example.snapfindai.facecore.api.FaceEmbedder.createFromFile].
  */
 object ModelDownloader {
 
@@ -40,7 +40,7 @@ object ModelDownloader {
         fileName: String,
         sha256: String,
         onProgress: ((bytesDownloaded: Long, totalBytes: Long) -> Unit)? = null,
-    ): File = getOrDownload(url, File(context.filesDir, "facesdk_models"), fileName, sha256, onProgress)
+    ): File = getOrDownload(url, File(context.filesDir, "facecore_models"), fileName, sha256, onProgress)
 
     /**
      * Checks whether a valid, checksum-verified copy is already cached --
@@ -49,7 +49,7 @@ object ModelDownloader {
      * on every launch after the first).
      */
     suspend fun isCached(context: Context, fileName: String, sha256: String): Boolean =
-        isCached(File(context.filesDir, "facesdk_models"), fileName, sha256)
+        isCached(File(context.filesDir, "facecore_models"), fileName, sha256)
 
     /** Same as the [Context]-based overload, but takes the cache directory directly. */
     suspend fun isCached(destDir: File, fileName: String, sha256: String): Boolean =
@@ -193,7 +193,7 @@ object ModelDownloader {
      * for a download that may never be retried.
      */
     suspend fun discardPartial(context: Context, fileName: String) =
-        discardPartial(File(context.filesDir, "facesdk_models"), fileName)
+        discardPartial(File(context.filesDir, "facecore_models"), fileName)
 
     /** Same as the [Context]-based overload, but takes the cache directory directly. */
     suspend fun discardPartial(destDir: File, fileName: String) {

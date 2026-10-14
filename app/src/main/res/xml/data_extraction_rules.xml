@@ -25,12 +25,12 @@
         <exclude domain="database" path="snapfind.db" />
         <exclude domain="file" path="saved_matches" />
         <exclude domain="file" path="job_work" />
-        <exclude domain="file" path="facesdk_models" />
+        <exclude domain="file" path="facecore_models" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="database" path="snapfind.db" />
         <exclude domain="file" path="saved_matches" />
         <exclude domain="file" path="job_work" />
-        <exclude domain="file" path="facesdk_models" />
+        <exclude domain="file" path="facecore_models" />
     </device-transfer>
 </data-extraction-rules>

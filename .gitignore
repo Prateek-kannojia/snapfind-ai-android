@@ -10,14 +10,13 @@
 .cxx
 local.properties
 
-# Model weights for facesdk — not committed, same as how the backend never
-# commits downloaded model weights. Debug-only assets (fast local iteration,
-# TimingSpikeRunner, etc.) -- release builds fetch them at runtime instead
-# via ModelDownloader, so they're not bundled into a shipped APK at all.
-# Hosted as a GitHub Release asset (see OnDeviceFaceMatchRepositoryImpl).
-facesdk/src/debug/assets/models/
+# Model weights for facecore — not committed, same as how the backend never
+# commits downloaded model weights. Every build fetches them at runtime via
+# ModelDownloader, so they are never bundled into a shipped APK.
+# Hosted as a GitHub Release asset (see ModelConfig).
+facecore/src/debug/assets/models/
 
-# adb-pulled debug output from the spike — regenerate locally, never commit.
+# adb-pulled measurement output -- regenerate locally, never commit.
 /*.csv
 
 # Private release-prep notes: account state, store-listing drafts and the

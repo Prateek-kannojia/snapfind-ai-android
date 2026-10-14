@@ -1,14 +1,14 @@
-package com.example.snapfindai.facesdk
+package com.example.snapfindai.facecore
 
 import android.content.Context
 import android.graphics.Bitmap
-import com.example.snapfindai.facesdk.api.FaceDetector
-import com.example.snapfindai.facesdk.api.FaceDetectorConfig
-import com.example.snapfindai.facesdk.api.FaceEmbedder
-import com.example.snapfindai.facesdk.model.DetectedFace
-import com.example.snapfindai.facesdk.model.EventPhotoInput
-import com.example.snapfindai.facesdk.model.EventPhotoMatchResult
-import com.example.snapfindai.facesdk.model.FaceEmbedding
+import com.example.snapfindai.facecore.api.FaceDetector
+import com.example.snapfindai.facecore.api.FaceDetectorConfig
+import com.example.snapfindai.facecore.api.FaceEmbedder
+import com.example.snapfindai.facecore.model.DetectedFace
+import com.example.snapfindai.facecore.model.EventPhotoInput
+import com.example.snapfindai.facecore.model.EventPhotoMatchResult
+import com.example.snapfindai.facecore.model.FaceEmbedding
 import java.io.Closeable
 
 /**
@@ -30,7 +30,7 @@ import java.io.Closeable
 class FaceMatchEngine internal constructor(
     private val detector: FaceDetector,
     private val embedder: FaceEmbedder,
-    private val logger: FaceSdkLogger,
+    private val logger: FaceCoreLogger,
 ) : Closeable {
 
     @Volatile private var closed = false
@@ -39,7 +39,7 @@ class FaceMatchEngine internal constructor(
         /** The bundled, validated pair: SCRFD (det_500m.onnx) + w600k_mbf.onnx from this module's own assets. [detectorConfig] tunes the detector's thresholds/input size without needing to assemble the pieces by hand. */
         suspend fun create(
             context: Context,
-            logger: FaceSdkLogger = FaceSdkLogger.NONE,
+            logger: FaceCoreLogger = FaceCoreLogger.NONE,
             detectorConfig: FaceDetectorConfig = FaceDetectorConfig(),
         ): FaceMatchEngine {
             val detector = FaceDetector.create(context, detectorConfig)
@@ -56,7 +56,7 @@ class FaceMatchEngine internal constructor(
         fun create(
             detector: FaceDetector,
             embedder: FaceEmbedder,
-            logger: FaceSdkLogger = FaceSdkLogger.NONE,
+            logger: FaceCoreLogger = FaceCoreLogger.NONE,
         ): FaceMatchEngine = FaceMatchEngine(detector, embedder, logger)
     }
 

@@ -1,4 +1,4 @@
-package com.example.snapfindai.facesdk
+package com.example.snapfindai.facecore
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
